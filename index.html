@@ -96,6 +96,7 @@
   .qitem .st{font-size:12px;font-weight:600;letter-spacing:.3px}
   .qitem .st.wait{color:var(--muted)}.qitem .st.work{color:var(--gold)}
   .qitem .st.done{color:var(--ok)}.qitem .st.fail{color:var(--wine)}
+  .qerr{font-size:12px;color:var(--wine);margin-top:3px;line-height:1.35;word-break:break-word}
 
   .chatlog{display:flex;flex-direction:column;gap:12px;max-height:46vh;overflow-y:auto;padding:6px 2px 14px}
   .msg{max-width:82%;padding:11px 15px;border-radius:14px;font-size:14.5px;white-space:pre-wrap}
@@ -183,7 +184,7 @@
           <div class="big">Suelta varias facturas o haz fotos</div>
           <div>PDF o imagen · puedes seleccionar varios a la vez · toca para elegir o usar cámara</div>
         </div>
-        <input id="file" type="file" accept="application/pdf,image/*" capture="environment" multiple style="display:none" onchange="onFile(event)">
+        <input id="file" type="file" accept="application/pdf,image/*" multiple style="display:none" onchange="onFile(event)">
         <div id="queue" class="queue"></div>
         <div style="margin-top:16px;display:flex;gap:10px">
           <button id="goBtn" class="btn" disabled onclick="procesarCola()"><span id="goTxt">Procesar</span></button>
@@ -367,8 +368,12 @@ async function callAI(content){
     method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:4096,messages:[{role:"user",content}]})
   });
-  const data=await r.json();
+  const txt=await r.text();
+  let data;
+  try{data=JSON.parse(txt);}
+  catch(e){throw new Error(`Respuesta no válida (HTTP ${r.status}). ${txt.slice(0,120)}`);}
   if(data.error)throw new Error(data.error.message||JSON.stringify(data.error));
+  if(!r.ok)throw new Error(`HTTP ${r.status}: ${txt.slice(0,120)}`);
   return (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
 }
 function parseJson(txt){
@@ -381,17 +386,56 @@ function parseJson(txt){
 function setTipo(t){tipo=t;[...document.querySelectorAll('#tipoSeg button')].forEach(b=>b.classList.toggle('on',b.dataset.t===t));}
 function onFile(e){addFiles(e.target.files);e.target.value='';}
 function addFiles(files){
-  [...files].forEach(f=>{
-    const rd=new FileReader();
-    rd.onload=()=>{cola.push({file:f,b64:rd.result.split(",")[1],mime:f.type,status:'wait'});renderQueue();};
-    rd.readAsDataURL(f);
+  [...files].forEach(async f=>{
+    if(f.type==='application/pdf'){
+      const rd=new FileReader();
+      rd.onload=()=>{cola.push({file:f,b64:rd.result.split(",")[1],mime:f.type,status:'wait'});renderQueue();};
+      rd.readAsDataURL(f);
+    }else if(f.type.startsWith('image/')){
+      try{
+        const c=await comprimirImagen(f);
+        cola.push({file:c.file,b64:c.b64,mime:c.mime,status:'wait'});renderQueue();
+      }catch(err){
+        // si la compresión falla, encola el original
+        const rd=new FileReader();
+        rd.onload=()=>{cola.push({file:f,b64:rd.result.split(",")[1],mime:f.type,status:'wait'});renderQueue();};
+        rd.readAsDataURL(f);
+      }
+    }
+  });
+}
+// Reduce el lado mayor a 2000px y recomprime a JPEG ~0.82 de calidad.
+function comprimirImagen(file){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(file);
+    const img=new Image();
+    img.onload=()=>{
+      const MAX=2000;
+      let {width:w,height:h}=img;
+      if(w>MAX||h>MAX){const r=Math.min(MAX/w,MAX/h);w=Math.round(w*r);h=Math.round(h*r);}
+      const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      URL.revokeObjectURL(url);
+      canvas.toBlob(blob=>{
+        if(!blob){reject(new Error('compresión'));return;}
+        const rd=new FileReader();
+        rd.onload=()=>{
+          const nf=new File([blob],(file.name.replace(/\.\w+$/,'')||'foto')+'.jpg',{type:'image/jpeg'});
+          resolve({file:nf,b64:rd.result.split(",")[1],mime:'image/jpeg'});
+        };
+        rd.readAsDataURL(blob);
+      },'image/jpeg',0.82);
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('no se pudo leer la imagen'));};
+    img.src=url;
   });
 }
 function renderQueue(){
   const q=document.getElementById('queue');
   q.innerHTML=cola.map((c,i)=>{
     const lab={wait:'En espera',work:'Procesando…',done:'Guardado',fail:'Error'}[c.status];
-    return `<div class="qitem"><span class="nm">${c.file.name}</span>
+    const errLine=(c.status==='fail'&&c.error)?`<div class="qerr">${c.error.replace(/</g,'&lt;').slice(0,200)}</div>`:'';
+    return `<div class="qitem"><div style="flex:1;min-width:0"><div class="nm">${c.file.name}</div>${errLine}</div>
       <span class="st ${c.status}">${c.status==='work'?'<span class="spin dark"></span> ':''}${lab}</span></div>`;
   }).join('');
   document.getElementById('goBtn').disabled=!cola.some(c=>c.status==='wait');
@@ -406,7 +450,7 @@ async function procesarCola(){
     if(c.status==='done')continue;
     c.status='work';renderQueue();
     try{await procesarUno(c);c.status='done';ok++;}
-    catch(err){c.status='fail';fail++;console.error(err);toast('Error en '+c.file.name+': '+err.message,true);}
+    catch(err){c.status='fail';c.error=err.message||String(err);fail++;console.error(err);toast('Error en '+c.file.name+': '+c.error,true);}
     renderQueue();
   }
   document.getElementById('goTxt').textContent='Procesar';
