@@ -748,6 +748,24 @@ function setupZoom(){
 async function loadProductos(){
   try{
     productos=await sb('compras_producto?select=id,codigo_interno,ref_proveedor,nombre,proveedor_nombre,ultimo_precio&order=codigo_interno.asc');
+    // precio medio ponderado por cantidad, últimos 12 meses
+    const hace1ano=new Date();hace1ano.setFullYear(hace1ano.getFullYear()-1);
+    const desde=hace1ano.toISOString().slice(0,10);
+    try{
+      const lin=await sb(`compras_linea?producto_id=not.is.null&select=producto_id,cantidad,importe,compras_doc(fecha)`);
+      const acc={}; // producto_id -> {imp, cant}
+      lin.forEach(l=>{
+        const f=(l.compras_doc||{}).fecha;
+        if(f&&f<desde)return; // fuera de ventana de 12 meses
+        const id=l.producto_id;if(!id)return;
+        if(!acc[id])acc[id]={imp:0,cant:0};
+        acc[id].imp+=(l.importe||0); acc[id].cant+=(l.cantidad||0);
+      });
+      productos.forEach(p=>{
+        const a=acc[p.id];
+        p.precio_medio=(a&&a.cant>0)?(a.imp/a.cant):null;
+      });
+    }catch(e){console.warn('precio medio:',e.message);}
     const sel=document.getElementById('fProdProv');
     const provs=[...new Set(productos.map(p=>p.proveedor_nombre).filter(Boolean))].sort();
     sel.innerHTML='<option value="">Todos los proveedores</option>'+provs.map(p=>`<option>${p}</option>`).join('');
@@ -764,11 +782,11 @@ function currentProd(){
 function renderProd(){
   let rows=currentProd();
   const st=sortState.productos;
-  const keymap={cod:p=>p.codigo_interno,prod:p=>p.nombre,ref:p=>p.ref_proveedor,prov:p=>p.proveedor_nombre,precio:p=>p.ultimo_precio};
+  const keymap={cod:p=>p.codigo_interno,prod:p=>p.nombre,ref:p=>p.ref_proveedor,prov:p=>p.proveedor_nombre,precio:p=>p.ultimo_precio,medio:p=>p.precio_medio};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headProd').innerHTML=
     thh('productos','cod','Cód. interno')+thh('productos','prod','Producto')+thh('productos','ref','Ref. proveedor')+
-    thh('productos','prov','Proveedor')+thh('productos','precio','Últ. precio','num');
+    thh('productos','prov','Proveedor')+thh('productos','precio','Últ. precio','num')+thh('productos','medio','Medio 12m','num');
   const tb=document.getElementById('prodBody');
   document.getElementById('prodCount').textContent=rows.length;
   document.getElementById('emptyProd').style.display=rows.length?'none':'block';
@@ -776,7 +794,8 @@ function renderProd(){
     <td>${p.codigo_interno||'—'}</td>
     <td><span class="editable" onblur="saveProd('${p.id}','nombre',this.textContent)" contenteditable>${p.nombre||''}</span></td>
     <td>${p.ref_proveedor||''}</td><td>${p.proveedor_nombre||''}</td>
-    <td class="num">${fmt(p.ultimo_precio)}</td></tr>`).join('');
+    <td class="num">${fmt(p.ultimo_precio)}</td>
+    <td class="num">${fmt(p.precio_medio)}</td></tr>`).join('');
 }
 async function saveProd(id,campo,val){
   val=val.trim();
@@ -787,7 +806,7 @@ async function saveProd(id,campo,val){
 function exportProd(){
   const rows=currentProd().map(p=>({
     'Código interno':p.codigo_interno||'','Producto':p.nombre||'','Ref. proveedor':p.ref_proveedor||'',
-    'Proveedor':p.proveedor_nombre||'','Último precio':p.ultimo_precio??''}));
+    'Proveedor':p.proveedor_nombre||'','Último precio':p.ultimo_precio??'','Precio medio 12m':p.precio_medio!=null?Math.round(p.precio_medio*100)/100:''}));
   if(!rows.length){toast('No hay productos que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(rows),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Productos');
