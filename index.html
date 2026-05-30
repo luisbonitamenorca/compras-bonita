@@ -577,10 +577,9 @@ async function procesarUno(c){
   const pautasTxt=conPautas.length
     ? conPautas.map(p=>`- ${p.nombre}${p.nif?' (CIF '+p.nif+')':''}: ${p.pautas}`).join('\n')
     : '(sin pautas específicas)';
-  const prompt=`Eres un OCR contable para un grupo de hostelería. Extrae los datos del documento adjunto.
+  const comun=`Eres un OCR contable para un grupo de hostelería. Extrae los datos del documento adjunto.
 
 CENTROS DE COSTE válidos (canal): ${CENTROS.join(', ')}.
-TIPO esperado: ${tipo==='auto'?'detéctalo tú (factura o albaran)':tipo}.
 
 REGLAS de clasificación que debes aplicar:
 ${reglasTxt}
@@ -590,22 +589,39 @@ ${pautasTxt}
 
 Asigna "canal" SOLO si una regla o el propio documento lo permite con seguridad. Si no estás seguro, deja canal:null.
 El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet).
-"base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).
+"base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).`;
 
-MUY IMPORTANTE según el tipo de documento:
-- Si es un ALBARÁN: extrae el detalle de líneas de producto en "lineas" (cada producto con código, nombre, cantidad, precio, importe). Deja "albaranes" como lista vacía.
-- Si es una FACTURA: NO extraigas productos (deja "lineas" como lista vacía). En su lugar, una factura suele agrupar varios albaranes: extrae en "albaranes" la lista de albaranes que la factura menciona, con su número, fecha e importe. Si la factura no lista albaranes, deja "albaranes" vacío.
+  let prompt;
+  if(tipo==='factura'){
+    // PROMPT ESPECÍFICO DE FACTURA: solo cabecera + lista de albaranes (sin productos)
+    prompt=`${comun}
+
+Este documento es una FACTURA. Una factura de proveedor normalmente AGRUPA VARIOS ALBARANES (notas de entrega). NO extraigas el detalle de productos.
+Tu tarea principal: localizar la lista de albaranes que aparece en la factura y extraer, para CADA uno, su número, su fecha y su importe.
+Los albaranes suelen aparecer como filas tipo "Albarán nº: XXXX  Fecha: DD/MM/AAAA ... IMPORTE" o "Albarán 26/246, Fecha: 22-04-2026". Extrae TODOS los que veas, en orden.
+Si un albarán no muestra importe, pon importe:null. Si la factura realmente no lista ningún albarán, devuelve "albaranes" como lista vacía.
 
 Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
-{"tipo":"factura|albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
-"lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}],
+{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
+  }else{
+    // PROMPT DE ALBARÁN (o auto): detalle de líneas de producto
+    prompt=`${comun}
+
+TIPO esperado: ${tipo==='auto'?'detéctalo tú; si es una factura que agrupa albaranes, márcala como "factura"':'albaran'}.
+Este documento es un ALBARÁN. Extrae el detalle de líneas de producto en "lineas": cada producto con su código, nombre, cantidad, precio unitario e importe.
+
+Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
+{"tipo":"albaran|factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
+"lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
+  }
   const block = c.mime==='application/pdf'
     ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
     : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}};
   const d=parseJson(await callAI([block,{type:"text",text:prompt}]));
   const canal=d.canal&&CENTROS.includes(d.canal)?d.canal:null;
-  const docTipo=d.tipo||(tipo==='auto'?'factura':tipo);
+  // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
+  const docTipo=(tipo==='auto')?(d.tipo||'factura'):tipo;
 
   // 1) imagen a Storage
   let imagen_url=null;
