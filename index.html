@@ -154,6 +154,9 @@
     font-size:18px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.25)}
   .zoomctl button:hover{background:#fff}
   .modal .detcol{padding:18px 22px;overflow:auto}
+  .modal .ce{border-bottom:1px dashed var(--line);padding:1px 4px;border-radius:4px;cursor:text;display:inline-block;min-width:18px}
+  .modal .ce:hover{background:#fff;border-bottom-color:var(--wine)}
+  .modal .ce:focus{outline:none;background:#fff;border-bottom:1px solid var(--wine);box-shadow:0 1px 0 var(--wine)}
   @media(max-width:760px){.modal .body{grid-template-columns:1fr}}
 
   .cfgwrap{max-width:560px;margin:6vh auto}
@@ -343,6 +346,7 @@ const BUCKET="documentos";
 let tipo="auto";
 let cola=[];               // [{file, b64, mime, status}]
 let compras=[], reglas=[], albaranes=[], proveedores=[], productos=[];
+let revisarDoc=null, revisarLineas=[];   // documento abierto en el modal de revisión
 
 /* ---------- ordenación genérica de tablas ---------- */
 const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1}};
@@ -504,20 +508,48 @@ function renderQueue(){
 }
 function limpiarCola(){cola=[];renderQueue();}
 async function procesarCola(){
+  const pend=cola.filter(c=>c.status!=='done').length;
+  if(pend>=6){
+    const mins=Math.ceil(pend*13/60);
+    if(!confirm(`Vas a procesar ${pend} documentos. Para respetar el límite de la IA, la app los espacia y tardará unos ${mins} min. Puedes dejar la pestaña abierta. ¿Continuar?`))return;
+  }
   document.getElementById('goBtn').disabled=true;
   document.getElementById('goTxt').innerHTML='<span class="spin"></span> Procesando…';
   let ok=0,fail=0;
-  for(const c of cola){
-    if(c.status==='done')continue;
-    c.status='work';renderQueue();
-    try{await procesarUno(c);c.status='done';ok++;}
-    catch(err){c.status='fail';c.error=err.message||String(err);fail++;console.error(err);toast('Error en '+c.file.name+': '+c.error,true);}
+  const pendientes=cola.filter(c=>c.status!=='done');
+  const GAP=13000; // ms entre documentos: respeta el límite de 5 peticiones/minuto con margen
+  for(let i=0;i<pendientes.length;i++){
+    const c=pendientes[i];
+    c.status='work';c.error=null;renderQueue();
+    try{
+      await procesarUno(c);
+      c.status='done';ok++;
+    }catch(err){
+      const msg=err.message||String(err);
+      // si es rate limit, espera 60s y reintenta UNA vez
+      if(/rate limit|429/i.test(msg)){
+        c.error='Límite alcanzado, esperando 60s para reintentar…';renderQueue();
+        await espera(60000);
+        try{await procesarUno(c);c.status='done';ok++;}
+        catch(e2){c.status='fail';c.error=e2.message||String(e2);fail++;}
+      }else{
+        c.status='fail';c.error=msg;fail++;console.error(err);
+      }
+    }
     renderQueue();
+    // pausa entre documentos (no tras el último), con cuenta atrás visible
+    if(i<pendientes.length-1){
+      for(let s=Math.round(GAP/1000);s>0;s--){
+        document.getElementById('goTxt').innerHTML=`<span class="spin"></span> Procesando… (siguiente en ${s}s)`;
+        await espera(1000);
+      }
+    }
   }
   document.getElementById('goTxt').textContent='Procesar';
-  await loadCompras();await loadAlbaranes();await loadProveedores();
+  await loadCompras();await loadAlbaranes();await loadProveedores();await loadProductos();
   toast(`Listo · ${ok} guardadas${fail?`, ${fail} con error`:''}`);
 }
+function espera(ms){return new Promise(r=>setTimeout(r,ms));}
 
 async function procesarUno(c){
   const reglasTxt=reglas.length?reglas.map(r=>'- '+r.texto).join('\n'):'(todavía sin reglas)';
@@ -724,8 +756,10 @@ async function revisar(docId){
   const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,total,descuento,estado,estado_detalle,imagen_url`);
   if(!r.length){toast('No encontrado',true);return;}
   const a=r[0];
+  revisarDoc=a;  // guardamos el doc abierto para la edición
   const tituloTipo=(a.tipo==='factura')?'Factura':'Albarán';
-  const lineas=await sb(`compras_linea?doc_id=eq.${docId}&select=id_producto,producto,cantidad,precio_unit,importe&order=created_at.asc`);
+  const lineas=await sb(`compras_linea?doc_id=eq.${docId}&select=id,id_producto,producto,cantidad,precio_unit,importe&order=created_at.asc`);
+  revisarLineas=lineas;
   document.getElementById('mTitle').textContent=`${tituloTipo} · ${a.proveedor||''} ${a.num_documento?'· '+a.num_documento:''}`;
   // imagen
   const ic=document.getElementById('mImg');
@@ -743,25 +777,106 @@ async function revisar(docId){
       setupZoom();
     }
   }else ic.innerHTML='<div class="noimg">sin imagen guardada</div>';
-  // detalle
+  // detalle (editable)
+  renderDetalle();
+  document.getElementById('modal').classList.add('show');
+}
+function renderDetalle(){
+  const a=revisarDoc, lineas=revisarLineas;
   const dc=document.getElementById('mDet');
-  const sumaLin=lineas.reduce((s,l)=>s+(num(l.importe)||0),0);
+  const vivas=lineas.filter(l=>!l._del);
+  const sumaLin=vivas.reduce((s,l)=>s+(num(l.importe)||0),0);
   const desc=num(a.descuento)||0;
   const base=num(a.base);
-  const descuadre=(base!=null&&lineas.length)?((sumaLin-desc)-base):null;
+  const descuadre=(base!=null&&vivas.length)?((sumaLin-desc)-base):null;
+  const ed='contenteditable class="ce"';
   dc.innerHTML=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
       ${estBadge(a.estado_detalle)}
       <span class="pill ${a.canal?'ok':'rev'}">${a.canal||'sin centro'}</span>
-      <span class="hint" style="margin:0">${a.fecha||''} · base ${fmt(a.base)}${desc?' · dto '+fmt(desc):''} · total ${fmt(a.total)}</span></div>
-    ${(descuadre!=null&&Math.abs(descuadre)>0.15)?`<div class="aviso" style="margin-bottom:14px">⚠️ Suma de líneas ${fmt(sumaLin)}${desc?' − dto '+fmt(desc):''} difiere de la base en ${fmt(descuadre)}</div>`:''}
-    <table><thead><tr><th>Cód.</th><th>Producto</th><th class="num">Cant.</th><th class="num">Importe</th></tr></thead><tbody>
-    ${lineas.length?lineas.map(l=>`<tr><td>${l.id_producto||''}</td><td>${l.producto||''}</td><td class="num">${l.cantidad??''}</td><td class="num">${fmt(l.importe)}</td></tr>`).join(''):'<tr><td colspan="4" class="hint">El OCR no extrajo líneas.</td></tr>'}
+      <span class="hint" style="margin:0">${a.fecha||''} · total ${fmt(a.total)}</span></div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;font-size:13px">
+      <span>Base imponible: <b ${ed} data-f="base">${a.base!=null?Number(a.base).toFixed(2):''}</b> €</span>
+      <span>Descuento: <b ${ed} data-f="descuento">${desc?desc.toFixed(2):'0'}</b> €</span>
+    </div>
+    ${(descuadre!=null&&Math.abs(descuadre)>0.15)?`<div class="aviso" id="avDescuadre" style="margin-bottom:14px">⚠️ Suma de líneas ${fmt(sumaLin)}${desc?' − dto '+fmt(desc):''} difiere de la base en ${fmt(descuadre)}</div>`:`<div class="aviso" id="avDescuadre" style="margin-bottom:14px;background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok);display:${lineas.length?'flex':'none'}">✓ Suma de líneas ${fmt(sumaLin)} cuadra con la base</div>`}
+    <table><thead><tr><th>Cód.</th><th>Producto</th><th class="num">Cant.</th><th class="num">Importe</th><th></th></tr></thead><tbody>
+    ${lineas.length?lineas.map((l,i)=>l._del?'':`<tr>
+      <td><span ${ed} data-i="${i}" data-f="id_producto">${l.id_producto||''}</span></td>
+      <td><span ${ed} data-i="${i}" data-f="producto">${l.producto||''}</span></td>
+      <td class="num"><span ${ed} data-i="${i}" data-f="cantidad">${l.cantidad??''}</span></td>
+      <td class="num"><span ${ed} data-i="${i}" data-f="importe">${l.importe!=null?Number(l.importe).toFixed(2):''}</span></td>
+      <td><span class="del" data-i="${i}" onclick="borrarLinea(${i})" title="Quitar línea">🗑</span></td></tr>`).join('')
+      :'<tr><td colspan="5" class="hint">El OCR no extrajo líneas.</td></tr>'}
     </tbody></table>
-    <p class="hint">Compara la foto de la izquierda con lo que leyó el OCR. Si algo no cuadra, lo corregimos en la próxima versión con edición en línea.</p>
-    <div style="margin-top:18px;border-top:1px solid var(--line);padding-top:16px">
-      <button class="btn ghost del-btn" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')">🗑 Borrar este documento</button>
+    <div style="margin-top:8px"><span class="link" onclick="anadirLinea()">+ añadir línea</span></div>
+    <p class="hint">Edita cualquier celda (clic) comparando con la foto. Al guardar se recalcula el cuadre.</p>
+    <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn" onclick="guardarRevision()">Guardar cambios</button>
+      <button class="btn ghost del-btn" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')">🗑 Borrar documento</button>
     </div>`;
-  document.getElementById('modal').classList.add('show');
+  // recalcular el aviso en vivo al editar
+  dc.querySelectorAll('.ce').forEach(el=>el.addEventListener('input',recalcAviso));
+}
+function recalcAviso(){
+  // lee los valores actuales de las celdas para previsualizar el cuadre
+  const dc=document.getElementById('mDet');
+  let suma=0;
+  revisarLineas.forEach((l,i)=>{
+    if(l._del)return;
+    const cel=dc.querySelector(`[data-i="${i}"][data-f="importe"]`);
+    if(cel)suma+=num(cel.textContent)||0;
+  });
+  const base=num(dc.querySelector('[data-f="base"]').textContent);
+  const desc=num(dc.querySelector('[data-f="descuento"]').textContent)||0;
+  const av=document.getElementById('avDescuadre');if(!av)return;
+  if(base==null){av.style.display='none';return;}
+  const dif=(suma-desc)-base;
+  av.style.display='flex';
+  if(Math.abs(dif)>0.15){
+    av.style.background='var(--warn-soft)';av.style.borderColor='#e8cfa0';av.style.color='var(--warn)';
+    av.innerHTML=`⚠️ Suma de líneas ${fmt(suma)}${desc?' − dto '+fmt(desc):''} difiere de la base en ${fmt(dif)}`;
+  }else{
+    av.style.background='var(--ok-soft)';av.style.borderColor='#bcd9c2';av.style.color='var(--ok)';
+    av.innerHTML=`✓ Suma de líneas ${fmt(suma)} cuadra con la base`;
+  }
+}
+function borrarLinea(i){revisarLineas[i]._del=true;renderDetalle();}
+function anadirLinea(){revisarLineas.push({id_producto:'',producto:'',cantidad:null,precio_unit:null,importe:null,_new:true});renderDetalle();}
+async function guardarRevision(){
+  const dc=document.getElementById('mDet');
+  // recoger valores editados de cabecera
+  const base=num(dc.querySelector('[data-f="base"]').textContent);
+  const descuento=num(dc.querySelector('[data-f="descuento"]').textContent);
+  // recoger líneas
+  revisarLineas.forEach((l,i)=>{
+    if(l._del)return;
+    const g=f=>{const c=dc.querySelector(`[data-i="${i}"][data-f="${f}"]`);return c?c.textContent.trim():'';};
+    l.id_producto=g('id_producto')||null;
+    l.producto=g('producto')||null;
+    l.cantidad=num(g('cantidad'));
+    l.importe=num(g('importe'));
+  });
+  try{
+    // 1) cabecera: base, descuento y recálculo de estado
+    const sumaLin=revisarLineas.filter(l=>!l._del).reduce((s,l)=>s+(num(l.importe)||0),0);
+    let estadoDet='CORRECTO';
+    if(revisarDoc.estado_detalle==='DUPLICADO')estadoDet='DUPLICADO'; // no perdemos el aviso de duplicado
+    else if(base==null||!revisarLineas.filter(l=>!l._del).length)estadoDet='REVISAR';
+    else if(Math.abs((sumaLin-(descuento||0))-base)>0.15)estadoDet='NO_CUADRA';
+    await sb(`compras_doc?id=eq.${revisarDoc.id}`,{method:'PATCH',body:JSON.stringify({
+      base,descuento,estado_detalle:estadoDet,estado:(estadoDet==='CORRECTO'?(revisarDoc.canal?'OK':'REVISAR'):'REVISAR')})});
+    // 2) líneas: borrar las marcadas, actualizar las existentes, crear las nuevas
+    for(const l of revisarLineas){
+      if(l._del&&l.id){await sb(`compras_linea?id=eq.${l.id}`,{method:'DELETE'});continue;}
+      if(l._del)continue;
+      const payload={id_producto:l.id_producto,producto:l.producto,cantidad:l.cantidad,importe:l.importe};
+      if(l.id){await sb(`compras_linea?id=eq.${l.id}`,{method:'PATCH',body:JSON.stringify(payload)});}
+      else{await sb('compras_linea',{method:'POST',body:JSON.stringify({...payload,doc_id:revisarDoc.id,canal:revisarDoc.canal})});}
+    }
+    toast('Cambios guardados');
+    closeModal();
+    await loadCompras();await loadAlbaranes();
+  }catch(err){toast('Error al guardar: '+err.message,true);}
 }
 function closeModal(){document.getElementById('modal').classList.remove('show');}
 
