@@ -180,6 +180,7 @@
       <button data-v="subir" class="active" onclick="tab('subir')">Subir</button>
       <button data-v="compras" onclick="tab('compras')">Compras</button>
       <button data-v="albaranes" onclick="tab('albaranes')">Albaranes</button>
+      <button data-v="facturas" onclick="tab('facturas')">Facturas</button>
       <button data-v="productos" onclick="tab('productos')">Productos</button>
       <button data-v="proveedores" onclick="tab('proveedores')">Proveedores</button>
       <button data-v="reglas" onclick="tab('reglas')">Reglas</button>
@@ -254,6 +255,26 @@
           </table>
         </div>
         <div id="emptyA" class="empty" style="display:none">Aún no hay albaranes. Sube uno desde la pestaña Subir.</div>
+      </div>
+    </section>
+
+    <!-- FACTURAS -->
+    <section id="v-facturas" class="view">
+      <div class="panel">
+        <div class="barrow">
+          <div class="total"><small>Facturas registradas</small><span id="facCount">0</span></div>
+          <div style="display:flex;gap:10px">
+            <button class="btn ghost" onclick="loadFacturas()">↻ Refrescar</button>
+            <button class="btn" onclick="exportFac()">Exportar Excel</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr id="headFac"></tr></thead>
+            <tbody id="facBody"></tbody>
+          </table>
+        </div>
+        <div id="emptyF" class="empty" style="display:none">Aún no hay facturas. Sube una desde la pestaña Subir.</div>
       </div>
     </section>
 
@@ -345,11 +366,11 @@ const SB_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZ
 const BUCKET="documentos";
 let tipo="auto";
 let cola=[];               // [{file, b64, mime, status}]
-let compras=[], reglas=[], albaranes=[], proveedores=[], productos=[];
+let compras=[], reglas=[], albaranes=[], proveedores=[], productos=[], facturas=[];
 let revisarDoc=null, revisarLineas=[];   // documento abierto en el modal de revisión
 
 /* ---------- ordenación genérica de tablas ---------- */
-const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1}};
+const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},facturas:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1}};
 function sortRows(rows,key,dir){
   if(!key)return rows;
   return [...rows].sort((a,b)=>{
@@ -371,7 +392,7 @@ function thh(tabla,colKey,label,extraClass){
 function setSort(tabla,colKey){
   const st=sortState[tabla];
   if(st.key===colKey)st.dir*=-1; else{st.key=colKey;st.dir=1;}
-  ({compras:renderTable,albaranes:renderAlb,proveedores:renderProv,productos:renderProd}[tabla])();
+  ({compras:renderTable,albaranes:renderAlb,facturas:renderFac,proveedores:renderProv,productos:renderProd}[tabla])();
 }
 
 /* ---------- normalización para casar proveedores ---------- */
@@ -402,9 +423,9 @@ window.addEventListener('DOMContentLoaded',()=>{
   el.addEventListener('dragover',x=>{x.preventDefault();el.classList.add('hot');});
   el.addEventListener('dragleave',()=>el.classList.remove('hot'));
   el.addEventListener('drop',x=>{x.preventDefault();el.classList.remove('hot');addFiles(x.dataTransfer.files);});
-  loadReglas(); loadCompras(); loadAlbaranes(); loadProveedores(); loadProductos();
+  loadReglas(); loadCompras(); loadAlbaranes(); loadFacturas(); loadProveedores(); loadProductos();
 });
-function resync(){loadReglas();loadCompras();loadAlbaranes();loadProveedores();loadProductos();toast('Sincronizado');}
+function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();loadProveedores();loadProductos();toast('Sincronizado');}
 
 /* ---------- supabase REST ---------- */
 async function sb(path,opts={}){
@@ -546,7 +567,7 @@ async function procesarCola(){
     }
   }
   document.getElementById('goTxt').textContent='Procesar';
-  await loadCompras();await loadAlbaranes();await loadProveedores();await loadProductos();
+  await loadCompras();await loadAlbaranes();await loadFacturas();await loadProveedores();await loadProductos();
   toast(`Listo · ${ok} guardadas${fail?`, ${fail} con error`:''}`);
 }
 function espera(ms){return new Promise(r=>setTimeout(r,ms));}
@@ -752,6 +773,40 @@ function exportAlb(){
   XLSX.utils.book_append_sheet(wb,ws,'Albaranes');
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
+async function loadFacturas(){
+  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url&order=created_at.desc");renderFac();}
+  catch(err){toast('No pude cargar facturas: '+err.message,true);}
+}
+function renderFac(){
+  let rows=[...facturas];
+  const st=sortState.facturas;
+  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  document.getElementById('headFac').innerHTML=
+    thh('facturas','fecha','Fecha')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
+    thh('facturas','centro','Centro')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+'<th>Revisar</th><th></th>';
+  const tb=document.getElementById('facBody');
+  document.getElementById('facCount').textContent=facturas.length;
+  document.getElementById('emptyF').style.display=facturas.length?'none':'block';
+  tb.innerHTML=rows.map(a=>`<tr>
+    <td>${a.fecha||''}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
+    <td>${a.canal||'—'}</td><td class="num">${fmt(a.total)}</td>
+    <td>${estBadge(a.estado_detalle)}</td>
+    <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
+    <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
+}
+function exportFac(){
+  let rows=[...facturas];
+  const st=sortState.facturas;
+  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  const data=rows.map(a=>({Fecha:a.fecha||'',Proveedor:a.proveedor||'','Nº factura':a.num_documento||'',
+    Centro:a.canal||'',Total:a.total??'',Estado:a.estado_detalle||'REVISAR'}));
+  if(!data.length){toast('No hay facturas que exportar',true);return;}
+  const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Facturas');
+  XLSX.writeFile(wb,`facturas_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
 async function revisar(docId){
   const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,total,descuento,estado,estado_detalle,imagen_url`);
   if(!r.length){toast('No encontrado',true);return;}
@@ -875,7 +930,7 @@ async function guardarRevision(){
     }
     toast('Cambios guardados');
     closeModal();
-    await loadCompras();await loadAlbaranes();
+    await loadCompras();await loadAlbaranes();await loadFacturas();
   }catch(err){toast('Error al guardar: '+err.message,true);}
 }
 function closeModal(){document.getElementById('modal').classList.remove('show');}
@@ -896,7 +951,7 @@ async function borrarDoc(docId,desc,imagen_url){
     // 2) documento (las líneas caen en cascada)
     await sb(`compras_doc?id=eq.${docId}`,{method:'DELETE'});
     closeModal();
-    await loadCompras();await loadAlbaranes();await loadProductos();
+    await loadCompras();await loadAlbaranes();await loadFacturas();await loadProductos();
     toast('Documento borrado');
   }catch(err){toast('Error al borrar: '+err.message,true);}
 }
@@ -1084,7 +1139,7 @@ async function fusionarPar(idOrigen,idDestino){
   try{
     await ejecutarFusion(idOrigen,idDestino,destino.nombre);
     toast(`Fusionado en «${destino.nombre}»`);
-    await loadProveedores();await loadProductos();await loadCompras();await loadAlbaranes();
+    await loadProveedores();await loadProductos();await loadCompras();await loadAlbaranes();await loadFacturas();
   }catch(err){toast('Error al fusionar: '+err.message,true);}
 }
 function accionesNuevo(p){
@@ -1115,7 +1170,7 @@ async function fusionarProv(idNuevo){
   try{
     await ejecutarFusion(idNuevo,idBueno,bueno.nombre);
     toast(`Fusionado en «${bueno.nombre}» · ${nDocs} doc movidos`);
-    await loadProveedores();await loadProductos();await loadCompras();await loadAlbaranes();
+    await loadProveedores();await loadProductos();await loadCompras();await loadAlbaranes();await loadFacturas();
   }catch(err){toast('Error al fusionar: '+err.message,true);}
 }
 async function rechazarProv(id){
