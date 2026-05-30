@@ -218,8 +218,6 @@
         <div class="filters">
           <div><label class="fld">Centro</label><select id="fCanal" onchange="renderTable()"></select></div>
           <div><label class="fld">Proveedor</label><input id="fProv" type="text" placeholder="filtrar…" oninput="renderTable()"></div>
-          <div><label class="fld">Tipo</label><select id="fTipo" onchange="renderTable()">
-            <option value="">Todos</option><option value="factura">Factura</option><option value="albaran">Albarán</option></select></div>
         </div>
         <div class="barrow">
           <div class="total"><small>Importe filtrado</small><span id="tTotal">0,00 €</span></div>
@@ -591,10 +589,16 @@ ${pautasTxt}
 
 Asigna "canal" SOLO si una regla o el propio documento lo permite con seguridad. Si no estás seguro, deja canal:null.
 El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet).
-Las líneas normalmente vienen SIN IVA (base). "base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global aplicado al pie del documento (positivo; 0 si no hay o si ya está repartido en las líneas).
+"base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).
+
+MUY IMPORTANTE según el tipo de documento:
+- Si es un ALBARÁN: extrae el detalle de líneas de producto en "lineas" (cada producto con código, nombre, cantidad, precio, importe). Deja "albaranes" como lista vacía.
+- Si es una FACTURA: NO extraigas productos (deja "lineas" como lista vacía). En su lugar, una factura suele agrupar varios albaranes: extrae en "albaranes" la lista de albaranes que la factura menciona, con su número, fecha e importe. Si la factura no lista albaranes, deja "albaranes" vacío.
+
 Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
 {"tipo":"factura|albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
-"lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
+"lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}],
+"albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
   const block = c.mime==='application/pdf'
     ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
     : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}};
@@ -633,15 +637,22 @@ Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
     const dup=await sb(`compras_doc?hash_doc=eq.${encodeURIComponent(hashDoc)}&select=id&limit=1`);
     if(dup.length){estadoDet='DUPLICADO';dupAviso=true;}
   }
-  // ¿cuadra? suma de líneas (menos descuento) vs BASE imponible (tolerancia 15 céntimos)
+  // ¿cuadra?
+  const esFactura=(docTipo==='factura');
   if(estadoDet==='CORRECTO'){
-    const sumaLineas=(d.lineas||[]).reduce((s,l)=>s+(num(l.importe)||0),0);
-    const desc=num(d.descuento)||0;
-    const base=num(d.base);
-    if(base==null||!(d.lineas||[]).length){
-      estadoDet='REVISAR';  // falta base o no hay líneas
-    }else if(Math.abs((sumaLineas-desc)-base)>0.15){
-      estadoDet='NO_CUADRA';
+    if(esFactura){
+      // factura: no tiene detalle de productos. Cuadre básico: que tenga total.
+      if(total==null)estadoDet='REVISAR';
+    }else{
+      // albarán: suma de líneas (menos descuento) vs BASE imponible (tolerancia 15 céntimos)
+      const sumaLineas=(d.lineas||[]).reduce((s,l)=>s+(num(l.importe)||0),0);
+      const desc=num(d.descuento)||0;
+      const base=num(d.base);
+      if(base==null||!(d.lineas||[]).length){
+        estadoDet='REVISAR';  // falta base o no hay líneas
+      }else if(Math.abs((sumaLineas-desc)-base)>0.15){
+        estadoDet='NO_CUADRA';
+      }
     }
   }
   const estadoSimple=(estadoDet==='CORRECTO')?(canal?'OK':'REVISAR'):'REVISAR';
@@ -650,39 +661,40 @@ Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
   const doc=await sb('compras_doc',{method:'POST',body:JSON.stringify({
     tipo:docTipo,fecha:d.fecha||null,proveedor:d.proveedor||null,proveedor_nif:d.proveedor_nif||null,
     proveedor_id,num_documento:d.num_documento||null,canal,base:num(d.base),iva:num(d.iva),total,descuento:num(d.descuento),
-    estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,raw:d})});
+    estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,
+    albaranes_detectados:esFactura?(d.albaranes||[]):null,raw:d})});
   const docId=doc[0].id;
   if(dupAviso)toast(`⚠️ Posible DUPLICADO: ${d.proveedor||''} ${d.num_documento||''}`,true);
 
-  // 4) líneas + maestro de productos (uno por proveedor+referencia)
-  const lineas=[];
-  for(const l of (d.lineas||[])){
-    let producto_id=null;
-    const ref=(l.id_producto||'').trim();
-    // identidad del producto: proveedor + referencia. Si no hay ref, no se crea ficha.
-    if(ref && proveedor_id){
-      const ex=await sb(`compras_producto?proveedor_id=eq.${proveedor_id}&ref_proveedor=eq.${encodeURIComponent(ref)}&select=id`);
-      if(ex.length){
-        producto_id=ex[0].id;
-        // actualizar último precio
-        await sb(`compras_producto?id=eq.${producto_id}`,{method:'PATCH',body:JSON.stringify({ultimo_precio:num(l.precio_unit)})});
-      }else{
-        let codigo=null;
-        try{
-          const r=await fetch(`${SB_URL}/rest/v1/rpc/compras_next_codigo`,{
-            method:'POST',headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,'Content-Type':'application/json'},body:'{}'});
-          codigo=(await r.text()).replace(/"/g,'').trim()||null;
-        }catch(e){console.warn('codigo interno:',e.message);}
-        const np=await sb('compras_producto',{method:'POST',body:JSON.stringify({
-          codigo_interno:codigo,ref_proveedor:ref,nombre:l.producto||null,
-          proveedor_id,proveedor_nombre:d.proveedor||null,ultimo_precio:num(l.precio_unit)})});
-        producto_id=np[0].id;
+  // 5) líneas de producto: SOLO para albaranes (las facturas no generan productos)
+  if(!esFactura){
+    const lineas=[];
+    for(const l of (d.lineas||[])){
+      let producto_id=null;
+      const ref=(l.id_producto||'').trim();
+      if(ref && proveedor_id){
+        const ex=await sb(`compras_producto?proveedor_id=eq.${proveedor_id}&ref_proveedor=eq.${encodeURIComponent(ref)}&select=id`);
+        if(ex.length){
+          producto_id=ex[0].id;
+          await sb(`compras_producto?id=eq.${producto_id}`,{method:'PATCH',body:JSON.stringify({ultimo_precio:num(l.precio_unit)})});
+        }else{
+          let codigo=null;
+          try{
+            const r=await fetch(`${SB_URL}/rest/v1/rpc/compras_next_codigo`,{
+              method:'POST',headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,'Content-Type':'application/json'},body:'{}'});
+            codigo=(await r.text()).replace(/"/g,'').trim()||null;
+          }catch(e){console.warn('codigo interno:',e.message);}
+          const np=await sb('compras_producto',{method:'POST',body:JSON.stringify({
+            codigo_interno:codigo,ref_proveedor:ref,nombre:l.producto||null,
+            proveedor_id,proveedor_nombre:d.proveedor||null,ultimo_precio:num(l.precio_unit)})});
+          producto_id=np[0].id;
+        }
       }
+      lineas.push({doc_id:docId,id_producto:ref||null,producto:l.producto||null,
+        cantidad:num(l.cantidad),precio_unit:num(l.precio_unit),importe:num(l.importe),canal,producto_id});
     }
-    lineas.push({doc_id:docId,id_producto:ref||null,producto:l.producto||null,
-      cantidad:num(l.cantidad),precio_unit:num(l.precio_unit),importe:num(l.importe),canal,producto_id});
+    if(lineas.length)await sb('compras_linea',{method:'POST',body:JSON.stringify(lineas)});
   }
-  if(lineas.length)await sb('compras_linea',{method:'POST',body:JSON.stringify(lineas)});
 }
 function num(x){if(x==null||x==='')return null;const n=parseFloat(String(x).replace(',','.'));return isNaN(n)?null:n;}
 
@@ -692,10 +704,10 @@ async function loadCompras(){
   catch(err){toast('No pude cargar compras: '+err.message,true);}
 }
 function currentRows(){
-  const fc=document.getElementById('fCanal').value, fp=document.getElementById('fProv').value.toLowerCase(), ft=document.getElementById('fTipo').value;
+  const fc=document.getElementById('fCanal').value, fp=document.getElementById('fProv').value.toLowerCase();
   return compras.filter(r=>{const dc=r.compras_doc||{};
+    if((dc.tipo||'')!=='albaran')return false;  // Compras = solo albaranes
     if(fc&&(r.canal||'')!==fc)return false;
-    if(ft&&(dc.tipo||'')!==ft)return false;
     if(fp&&!((dc.proveedor||'').toLowerCase().includes(fp)))return false;
     return true;});
 }
@@ -710,7 +722,7 @@ function renderTable(){
   document.getElementById('headCompras').innerHTML=
     thh('compras','fecha','Fecha')+thh('compras','prov','Proveedor')+thh('compras','cod','Cód.')+thh('compras','prod','Producto')+
     thh('compras','nalb','Nº albarán')+thh('compras','cant','Cant.','num')+thh('compras','imp','Importe','num')+
-    thh('compras','canal','Centro')+thh('compras','doc','Doc')+'<th></th>';
+    thh('compras','canal','Centro')+'<th>Estado</th><th></th>';
   const tb=document.getElementById('tbody');
   document.getElementById('emptyC').style.display=rows.length?'none':'block';
   tb.innerHTML=rows.map(r=>{const dc=r.compras_doc||{};return `<tr>
@@ -718,7 +730,7 @@ function renderTable(){
     <td>${dc.num_documento||''}</td>
     <td class="num">${r.cantidad??''}</td><td class="num">${fmt(r.importe)}</td>
     <td><span class="editable" onblur="saveCanal('${r.id}',this.textContent)" contenteditable>${r.canal||'—'}</span></td>
-    <td>${(dc.tipo||'').slice(0,3)} ${estBadge(dc.estado_detalle)}</td>
+    <td>${estBadge(dc.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${r.doc_id}')">abrir</span></td></tr>`;}).join('');
   document.getElementById('tTotal').textContent=fmt(rows.reduce((s,r)=>s+(r.importe||0),0));
 }
