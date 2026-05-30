@@ -90,6 +90,11 @@
   .chip{display:inline-flex;align-items:center;gap:5px;background:var(--warn-soft);color:var(--warn);border:1px solid #e8cfa0;
     border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600}
   .swi{cursor:pointer;font-size:18px;user-select:none}
+  .est{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.3px;padding:3px 9px;border-radius:999px;white-space:nowrap}
+  .est.correcto{background:var(--ok-soft);color:var(--ok)}
+  .est.duplicado{background:#fae0e0;color:#a01a1a}
+  .est.nocuadra{background:#fce3cf;color:#9a4a12}
+  .est.revisar{background:var(--warn-soft);color:var(--warn)}
   .btn.del-btn{color:var(--wine);border-color:var(--wine-soft)}
   .btn.del-btn:hover{background:var(--wine);color:#fff;border-color:var(--wine)}
 
@@ -562,12 +567,36 @@ Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
     proveedores.push({id:np[0].id,nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,autorizado:false,_n:0});
   }
 
-  // 3) documento
+  // 3) AUDITORÍA del documento
+  const total=num(d.total);
+  // hash para detectar duplicados: proveedor(norm) + nº doc(norm) + total
+  const hashDoc=[normNif(d.proveedor_nif)||normName(d.proveedor),
+    String(d.num_documento||'').toUpperCase().replace(/[^A-Z0-9]/g,''),
+    total!=null?total.toFixed(2):''].join('|');
+  let estadoDet='CORRECTO', dupAviso=false;
+  // ¿duplicado? buscar mismo hash en lo ya guardado
+  if(d.num_documento && total!=null){
+    const dup=await sb(`compras_doc?hash_doc=eq.${encodeURIComponent(hashDoc)}&select=id&limit=1`);
+    if(dup.length){estadoDet='DUPLICADO';dupAviso=true;}
+  }
+  // ¿cuadra? suma de líneas vs total cabecera (tolerancia 5 céntimos)
+  if(estadoDet==='CORRECTO'){
+    const sumaLineas=(d.lineas||[]).reduce((s,l)=>s+(num(l.importe)||0),0);
+    if(total==null||!(d.lineas||[]).length){
+      estadoDet='REVISAR';  // falta total o no hay líneas
+    }else if(Math.abs(sumaLineas-total)>0.05){
+      estadoDet='NO_CUADRA';
+    }
+  }
+  const estadoSimple=(estadoDet==='CORRECTO')?(canal?'OK':'REVISAR'):'REVISAR';
+
+  // 4) documento
   const doc=await sb('compras_doc',{method:'POST',body:JSON.stringify({
     tipo:docTipo,fecha:d.fecha||null,proveedor:d.proveedor||null,proveedor_nif:d.proveedor_nif||null,
-    proveedor_id,num_documento:d.num_documento||null,canal,base:num(d.base),iva:num(d.iva),total:num(d.total),
-    estado:canal?'OK':'REVISAR',imagen_url,raw:d})});
+    proveedor_id,num_documento:d.num_documento||null,canal,base:num(d.base),iva:num(d.iva),total,
+    estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,raw:d})});
   const docId=doc[0].id;
+  if(dupAviso)toast(`⚠️ Posible DUPLICADO: ${d.proveedor||''} ${d.num_documento||''}`,true);
 
   // 4) líneas + maestro de productos (uno por proveedor+referencia)
   const lineas=[];
@@ -603,7 +632,7 @@ function num(x){if(x==null||x==='')return null;const n=parseFloat(String(x).repl
 
 /* ---------- compras ---------- */
 async function loadCompras(){
-  try{compras=await sb('compras_linea?select=id,doc_id,id_producto,producto,cantidad,importe,canal,compras_doc(fecha,proveedor,tipo,num_documento,estado)&order=created_at.desc');renderTable();}
+  try{compras=await sb('compras_linea?select=id,doc_id,id_producto,producto,cantidad,importe,canal,compras_doc(fecha,proveedor,tipo,num_documento,estado,estado_detalle)&order=created_at.desc');renderTable();}
   catch(err){toast('No pude cargar compras: '+err.message,true);}
 }
 function currentRows(){
@@ -633,7 +662,7 @@ function renderTable(){
     <td>${dc.num_documento||''}</td>
     <td class="num">${r.cantidad??''}</td><td class="num">${fmt(r.importe)}</td>
     <td><span class="editable" onblur="saveCanal('${r.id}',this.textContent)" contenteditable>${r.canal||'—'}</span></td>
-    <td>${(dc.tipo||'').slice(0,3)} ${dc.estado==='REVISAR'?'<span class="pill rev">rev</span>':''}</td>
+    <td>${(dc.tipo||'').slice(0,3)} ${estBadge(dc.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${r.doc_id}')">abrir</span></td></tr>`;}).join('');
   document.getElementById('tTotal').textContent=fmt(rows.reduce((s,r)=>s+(r.importe||0),0));
 }
@@ -655,13 +684,13 @@ function exportXlsx(){
 
 /* ---------- albaranes ---------- */
 async function loadAlbaranes(){
-  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,num_documento,canal,total,estado,imagen_url&order=created_at.desc");renderAlb();}
+  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url&order=created_at.desc");renderAlb();}
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
 }
 function renderAlb(){
   let rows=[...albaranes];
   const st=sortState.albaranes;
-  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado};
+  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headAlb').innerHTML=
     thh('albaranes','fecha','Fecha')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
@@ -672,7 +701,7 @@ function renderAlb(){
   tb.innerHTML=rows.map(a=>`<tr>
     <td>${a.fecha||''}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${a.canal||'—'}</td><td class="num">${fmt(a.total)}</td>
-    <td>${a.estado==='REVISAR'?'<span class="pill rev">revisar</span>':'<span class="pill ok">ok</span>'}</td>
+    <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
 }
@@ -682,7 +711,7 @@ function exportAlb(){
   const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(a=>({Fecha:a.fecha||'',Proveedor:a.proveedor||'','Nº albarán':a.num_documento||'',
-    Centro:a.canal||'',Total:a.total??'',Estado:a.estado||''}));
+    Centro:a.canal||'',Total:a.total??'',Estado:a.estado_detalle||'REVISAR'}));
   if(!data.length){toast('No hay albaranes que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Albaranes');
@@ -691,7 +720,7 @@ function exportAlb(){
 async function revisar(docId){
   let a=albaranes.find(x=>x.id===docId);
   if(!a){
-    const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,total,estado,imagen_url`);
+    const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url`);
     if(!r.length){toast('No encontrado',true);return;}
     a=r[0];
   }
@@ -716,9 +745,13 @@ async function revisar(docId){
   }else ic.innerHTML='<div class="noimg">sin imagen guardada</div>';
   // detalle
   const dc=document.getElementById('mDet');
-  dc.innerHTML=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+  const sumaLin=lineas.reduce((s,l)=>s+(num(l.importe)||0),0);
+  const descuadre=(a.total!=null&&lineas.length)?(sumaLin-a.total):null;
+  dc.innerHTML=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+      ${estBadge(a.estado_detalle)}
       <span class="pill ${a.canal?'ok':'rev'}">${a.canal||'sin centro'}</span>
       <span class="hint" style="margin:0">${a.fecha||''} · total ${fmt(a.total)}</span></div>
+    ${(descuadre!=null&&Math.abs(descuadre)>0.05)?`<div class="aviso" style="margin-bottom:14px">⚠️ Suma de líneas ${fmt(sumaLin)} · difiere del total en ${fmt(descuadre)}</div>`:''}
     <table><thead><tr><th>Cód.</th><th>Producto</th><th class="num">Cant.</th><th class="num">Importe</th></tr></thead><tbody>
     ${lineas.length?lineas.map(l=>`<tr><td>${l.id_producto||''}</td><td>${l.producto||''}</td><td class="num">${l.cantidad??''}</td><td class="num">${fmt(l.importe)}</td></tr>`).join(''):'<tr><td colspan="4" class="hint">El OCR no extrajo líneas.</td></tr>'}
     </tbody></table>
@@ -976,6 +1009,12 @@ async function delRule(id){try{await sb(`compras_regla?id=eq.${id}`,{method:'DEL
 function tab(v){[...document.querySelectorAll('nav.tabs button')].forEach(b=>b.classList.toggle('active',b.dataset.v===v));
   [...document.querySelectorAll('.view')].forEach(s=>s.classList.toggle('active',s.id==='v-'+v));}
 function fmt(n){if(n==null||n==='')return '';return Number(n).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';}
+function estBadge(ed){
+  const map={CORRECTO:['correcto','🟢 Correcto'],DUPLICADO:['duplicado','🔴 Duplicado'],
+    NO_CUADRA:['nocuadra','🟠 No cuadra'],REVISAR:['revisar','🟡 Revisar']};
+  const [cls,txt]=map[ed]||map['REVISAR'];
+  return `<span class="est ${cls}">${txt}</span>`;
+}
 let toastT;
 function toast(msg,err){const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(err?' err':'');
   clearTimeout(toastT);toastT=setTimeout(()=>t.className='toast',3200);}
