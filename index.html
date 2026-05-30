@@ -95,6 +95,8 @@
   .est.duplicado{background:#fae0e0;color:#a01a1a}
   .est.nocuadra{background:#fce3cf;color:#9a4a12}
   .est.revisar{background:var(--warn-soft);color:var(--warn)}
+  .selcentro{font-size:12.5px;padding:4px 6px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--ink);cursor:pointer;max-width:150px}
+  .selcentro:hover{border-color:var(--wine)}
   .btn.del-btn{color:var(--wine);border-color:var(--wine-soft)}
   .btn.del-btn:hover{background:var(--wine);color:#fff;border-color:var(--wine)}
 
@@ -577,6 +579,10 @@ async function procesarUno(c){
   const pautasTxt=conPautas.length
     ? conPautas.map(p=>`- ${p.nombre}${p.nif?' (CIF '+p.nif+')':''}: ${p.pautas}`).join('\n')
     : '(sin pautas específicas)';
+  const conPautaFac=proveedores.filter(p=>p.pauta_factura&&p.pauta_factura.trim());
+  const pautaFacTxt=conPautaFac.length
+    ? conPautaFac.map(p=>`- ${p.nombre}${p.nif?' (CIF '+p.nif+')':''}: ${p.pauta_factura}`).join('\n')
+    : '(sin pautas de factura específicas)';
   const comun=`Eres un OCR contable para un grupo de hostelería. Extrae los datos del documento adjunto.
 
 CENTROS DE COSTE válidos (canal): ${CENTROS.join(', ')}.
@@ -604,7 +610,10 @@ Cómo leer los albaranes:
 - CUIDADO: la primera columna de las líneas de producto es el CÓDIGO DE ARTÍCULO (ej. 013782, 015048), NO es un número de albarán. No lo confundas. El número de albarán SOLO aparece en las líneas de cabecera "Albarán nº...".
 - Para cada albarán, SUMA los importes de todas sus líneas de producto y da ese total como "importe" del albarán. Si la cabecera ya trae un importe total, úsalo.
 
-Resultado: una fila por número de albarán distinto, con su fecha y su importe total (suma de su desglose). Extrae TODOS los albaranes. Si alguno no tiene importe, pon importe:null.`;
+Resultado: una fila por número de albarán distinto, con su fecha y su importe total (suma de su desglose). Extrae TODOS los albaranes. Si alguno no tiene importe, pon importe:null.
+
+PAUTAS DE FACTURA POR PROVEEDOR (si el proveedor de este documento coincide, sigue su pauta para localizar los albaranes):
+${pautaFacTxt}`;
   const instrAlbaran=`Un ALBARÁN lleva detalle de productos. Extrae en "lineas" cada producto: código, nombre, cantidad, precio_unit e importe.`;
 
   if(tipo==='factura'){
@@ -830,7 +839,7 @@ function renderAlb(){
   document.getElementById('emptyA').style.display=albaranes.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
     <td>${a.fecha||''}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
-    <td>${a.canal||'—'}</td><td class="num">${fmt(a.total)}</td>
+    <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
@@ -881,10 +890,22 @@ function renderFac(){
   document.getElementById('emptyF').style.display=facturas.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
     <td>${a.fecha||''}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
-    <td>${a.canal||'—'}</td><td class="num">${fmt(a.total)}</td>
+    <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
+}
+// desplegable de centro reutilizable para los listados
+function selectCentro(docId,actual){
+  const ops=['<option value="">—</option>'].concat(CENTROS.map(c=>`<option value="${c}"${c===actual?' selected':''}>${c}</option>`)).join('');
+  return `<select class="selcentro" onchange="saveDocCanal('${docId}',this.value)">${ops}</select>`;
+}
+async function saveDocCanal(docId,val){
+  try{
+    await sb(`compras_doc?id=eq.${docId}`,{method:'PATCH',body:JSON.stringify({canal:val||null})});
+    [facturas,albaranes].forEach(arr=>{const d=arr.find(x=>x.id===docId);if(d)d.canal=val||null;});
+    toast(val?`Centro: ${val}`:'Centro quitado');
+  }catch(err){toast('Error: '+err.message,true);}
 }
 function exportFac(){
   let rows=[...facturas];
@@ -936,7 +957,6 @@ function renderDetalle(){
     const albs=revisarAlbaranes.filter(x=>!x._del);
     const sumaAlb=albs.reduce((s,x)=>s+(num(x.importe)||0),0);
     const ed='contenteditable class="ce"';
-    const difTotal=(a.total!=null)?(sumaAlb-num(a.total)):null;
     dc.innerHTML=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
         ${estBadge(a.estado_detalle)}
         <span class="pill ${a.canal?'ok':'rev'}">${a.canal||'sin centro'}</span>
@@ -952,9 +972,7 @@ function renderDetalle(){
         :'<tr><td colspan="4" class="hint">El OCR no detectó albaranes. Añádelos a mano abajo.</td></tr>'}
       </tbody></table>
       <div style="margin-top:8px"><span class="link" onclick="anadirAlb()">+ añadir albarán</span></div>
-      <div class="aviso" id="avAlb" style="margin-top:12px;${(difTotal!=null&&Math.abs(difTotal)<0.15)?'background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)':''}">
-        ${difTotal==null?`Suma de albaranes: ${fmt(sumaAlb)}`:(Math.abs(difTotal)<0.15?`✓ Suma de albaranes ${fmt(sumaAlb)} cuadra con el total`:`⚠️ Suma de albaranes ${fmt(sumaAlb)} difiere del total en ${fmt(difTotal)}`)}
-      </div>
+      ${(()=>{const c=cuadreAlbaranes(sumaAlb,a.base,a.total);return `<div class="aviso" id="avAlb" style="margin-top:12px;${c.ok===true?'background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)':(c.ok===null?'background:var(--paper);color:var(--muted)':'')}">${c.html}</div>`;})()}
       <p class="hint" style="margin-top:14px">Edita cualquier celda comparando con la foto. Útil para facturas con formatos difíciles. Al guardar se actualiza la lista.</p>
       <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn" onclick="guardarAlbaranes()">Guardar cambios</button>
@@ -1034,16 +1052,15 @@ function recalcAlb(){
     if(cel)suma+=num(cel.textContent)||0;
   });
   const av=document.getElementById('avAlb');if(!av)return;
-  const tot=revisarDoc.total;
-  if(tot==null){av.textContent=`Suma de albaranes: ${fmt(suma)}`;return;}
-  const dif=suma-num(tot);
-  if(Math.abs(dif)<0.15){
+  const c=cuadreAlbaranes(suma,revisarDoc.base,revisarDoc.total);
+  if(c.ok===true){
     av.style.background='var(--ok-soft)';av.style.borderColor='#bcd9c2';av.style.color='var(--ok)';
-    av.innerHTML=`✓ Suma de albaranes ${fmt(suma)} cuadra con el total`;
-  }else{
+  }else if(c.ok===false){
     av.style.background='var(--warn-soft)';av.style.borderColor='#e8cfa0';av.style.color='var(--warn)';
-    av.innerHTML=`⚠️ Suma de albaranes ${fmt(suma)} difiere del total en ${fmt(dif)}`;
+  }else{
+    av.style.background='var(--paper)';av.style.borderColor='var(--line)';av.style.color='var(--muted)';
   }
+  av.innerHTML=c.html;
 }
 async function guardarAlbaranes(){
   const dc=document.getElementById('mDet');
@@ -1226,7 +1243,7 @@ function exportProd(){
 /* ---------- proveedores ---------- */
 async function loadProveedores(){
   try{
-    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,critico,pautas,autorizado,muestra_url&order=nombre.asc');
+    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,critico,pautas,pauta_factura,autorizado,muestra_url&order=nombre.asc');
     const docs=await sb('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
     proveedores.forEach(p=>p._n=cnt[p.id]||0);
@@ -1247,7 +1264,7 @@ function renderProv(){
   }else av.style.display='none';
   document.getElementById('headProv').innerHTML=
     thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+thh('proveedores','cat','Categoría')+
-    thh('proveedores','crit','Crítico')+'<th>Pautas</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
+    thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
   const tb=document.getElementById('provBody');
   document.getElementById('provCount').textContent=proveedores.length;
   document.getElementById('emptyP').style.display=proveedores.length?'none':'block';
@@ -1257,6 +1274,7 @@ function renderProv(){
     <td><span class="editable" onblur="saveProv('${p.id}','categoria',this.textContent)" contenteditable>${p.categoria||'—'}</span></td>
     <td><span class="swi" onclick="toggleCritico('${p.id}')" title="Marcar crítico">${p.critico?'🔴':'⚪️'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pautas',this.textContent)" contenteditable>${p.pautas||'—'}</span></td>
+    <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pauta_factura',this.textContent)" contenteditable>${p.pauta_factura||'—'}</span></td>
     <td class="num">${p._n}</td>
     <td>${p.autorizado===false?accionesNuevo(p):`<span class="pill ok">ok</span> <span class="link" style="font-size:12px" onclick="fusionUI('${p.id}')">fusionar</span>`}</td>
   </tr>`).join('');
@@ -1440,6 +1458,18 @@ function estBadge(ed){
     NO_CUADRA:['nocuadra','🟠 No cuadra'],REVISAR:['revisar','🟡 Revisar']};
   const [cls,txt]=map[ed]||map['REVISAR'];
   return `<span class="est ${cls}">${txt}</span>`;
+}
+// Cuadre LAXO de la suma de albaranes: orientativo, no al céntimo.
+// Lo importante no es el céntimo, sino no haberse dejado ningún albarán.
+// Cuadra si la suma se acerca a la BASE o al TOTAL dentro de un margen amplio.
+function cuadreAlbaranes(suma,base,total){
+  const refs=[base,total].map(num).filter(v=>v!=null&&v>0);
+  if(!refs.length)return {ok:null,html:`Suma de albaranes: ${fmt(suma)}`};
+  // margen: 3% de la referencia o 3 €, lo que sea mayor (absorbe IVA pequeño, descuentos, redondeos)
+  const cuadra=refs.some(ref=>{const margen=Math.max(ref*0.03,3);return Math.abs(suma-ref)<=margen;});
+  if(cuadra)return {ok:true,html:`✓ Suma de albaranes ${fmt(suma)} · cuadra (orientativo)`};
+  const masCercana=refs.reduce((a,b)=>Math.abs(suma-a)<Math.abs(suma-b)?a:b);
+  return {ok:false,html:`Suma de albaranes ${fmt(suma)} · se aleja de la referencia (${fmt(masCercana)}). Revisa que no falte ningún albarán.`};
 }
 let toastT;
 function toast(msg,err){const t=document.getElementById('toast');t.textContent=msg;t.className='toast show'+(err?' err':'');
