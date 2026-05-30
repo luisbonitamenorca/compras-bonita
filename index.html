@@ -618,7 +618,14 @@ Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
   const block = c.mime==='application/pdf'
     ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
     : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}};
-  const d=parseJson(await callAI([block,{type:"text",text:prompt}]));
+  const respuestaCruda=await callAI([block,{type:"text",text:prompt}]);
+  console.log('=== OCR diagnóstico ===');
+  console.log('Tipo seleccionado:',tipo);
+  console.log('Respuesta CRUDA de la IA:',respuestaCruda);
+  const d=parseJson(respuestaCruda);
+  console.log('JSON parseado:',d);
+  console.log('Albaranes detectados:',d.albaranes);
+  console.log('=======================');
   const canal=d.canal&&CENTROS.includes(d.canal)?d.canal:null;
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
   const docTipo=(tipo==='auto')?(d.tipo||'factura'):tipo;
