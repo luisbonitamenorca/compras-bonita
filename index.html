@@ -262,6 +262,7 @@
         <div class="barrow">
           <div class="total"><small>Facturas registradas</small><span id="facCount">0</span></div>
           <div style="display:flex;gap:10px">
+            <button class="btn ghost" onclick="limpiarLineasFacturas()">🧹 Limpiar detalle viejo</button>
             <button class="btn ghost" onclick="loadFacturas()">↻ Refrescar</button>
             <button class="btn" onclick="exportFac()">Exportar Excel</button>
           </div>
@@ -789,6 +790,23 @@ async function loadFacturas(){
   try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url&order=created_at.desc");renderFac();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
 }
+async function limpiarLineasFacturas(){
+  if(!confirm('Las facturas no deben tener detalle de productos (ese detalle vive en los albaranes).\n\nEsto borra las líneas de producto de TODAS las facturas. No toca los albaranes ni los datos de cabecera de las facturas.\n\n¿Continuar?'))return;
+  try{
+    // ids de todas las facturas
+    const facs=await sb('compras_doc?tipo=eq.factura&select=id');
+    let limpiadas=0;
+    for(const f of facs){
+      const lin=await sb(`compras_linea?doc_id=eq.${f.id}&select=id&limit=1`);
+      if(lin.length){
+        await sb(`compras_linea?doc_id=eq.${f.id}`,{method:'DELETE'});
+        limpiadas++;
+      }
+    }
+    toast(`Detalle limpiado en ${limpiadas} factura(s)`);
+    await loadCompras();await loadFacturas();await loadProductos();
+  }catch(err){toast('Error al limpiar: '+err.message,true);}
+}
 function renderFac(){
   let rows=[...facturas];
   const st=sortState.facturas;
@@ -820,12 +838,12 @@ function exportFac(){
   XLSX.writeFile(wb,`facturas_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function revisar(docId){
-  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,total,descuento,estado,estado_detalle,imagen_url`);
+  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,total,descuento,estado,estado_detalle,imagen_url,albaranes_detectados`);
   if(!r.length){toast('No encontrado',true);return;}
   const a=r[0];
   revisarDoc=a;  // guardamos el doc abierto para la edición
   const tituloTipo=(a.tipo==='factura')?'Factura':'Albarán';
-  const lineas=await sb(`compras_linea?doc_id=eq.${docId}&select=id,id_producto,producto,cantidad,precio_unit,importe&order=created_at.asc`);
+  const lineas=(a.tipo==='factura')?[]:await sb(`compras_linea?doc_id=eq.${docId}&select=id,id_producto,producto,cantidad,precio_unit,importe&order=created_at.asc`);
   revisarLineas=lineas;
   document.getElementById('mTitle').textContent=`${tituloTipo} · ${a.proveedor||''} ${a.num_documento?'· '+a.num_documento:''}`;
   // imagen
@@ -849,8 +867,31 @@ async function revisar(docId){
   document.getElementById('modal').classList.add('show');
 }
 function renderDetalle(){
-  const a=revisarDoc, lineas=revisarLineas;
+  const a=revisarDoc;
   const dc=document.getElementById('mDet');
+  // ===== FACTURA: mostrar lista de albaranes detectados =====
+  if(a.tipo==='factura'){
+    const albs=Array.isArray(a.albaranes_detectados)?a.albaranes_detectados:[];
+    const sumaAlb=albs.reduce((s,x)=>s+(num(x.importe)||0),0);
+    dc.innerHTML=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+        ${estBadge(a.estado_detalle)}
+        <span class="pill ${a.canal?'ok':'rev'}">${a.canal||'sin centro'}</span>
+        <span class="hint" style="margin:0">${a.fecha||''} · total ${fmt(a.total)}</span></div>
+      <div style="font-size:13px;margin-bottom:12px">Base imponible: <b>${fmt(a.base)}</b></div>
+      <div style="font-weight:600;font-size:13px;margin-bottom:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Albaranes incluidos en esta factura</div>
+      <table><thead><tr><th>Nº albarán</th><th>Fecha</th><th class="num">Importe</th></tr></thead><tbody>
+      ${albs.length?albs.map(x=>`<tr><td>${x.num_albaran||''}</td><td>${x.fecha||''}</td><td class="num">${x.importe!=null?fmt(x.importe):'—'}</td></tr>`).join('')
+        :'<tr><td colspan="3" class="hint">El OCR no detectó albaranes en esta factura. Cuando montemos la conciliación, podrás añadirlos a mano.</td></tr>'}
+      </tbody></table>
+      ${albs.length?`<div class="hint" style="margin-top:8px">Suma de albaranes: ${fmt(sumaAlb)} ${a.total!=null?(Math.abs(sumaAlb-num(a.total))<0.15?'· ✓ cuadra con el total':'· difiere del total en '+fmt(sumaAlb-num(a.total))):''}</div>`:''}
+      <p class="hint" style="margin-top:14px">La factura no lleva detalle de productos: ese detalle está en los albaranes. La conciliación factura↔albaranes la montaremos en la siguiente versión.</p>
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn ghost del-btn" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')">🗑 Borrar documento</button>
+      </div>`;
+    return;
+  }
+  // ===== ALBARÁN: tabla editable de productos =====
+  const lineas=revisarLineas;
   const vivas=lineas.filter(l=>!l._del);
   const sumaLin=vivas.reduce((s,l)=>s+(num(l.importe)||0),0);
   const desc=num(a.descuento)||0;
