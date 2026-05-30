@@ -597,8 +597,9 @@ El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del c
   const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
 "lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
   const instrFactura=`Una FACTURA agrupa varios ALBARANES (notas de entrega). NO extraigas productos: extrae la lista de albaranes que la factura menciona.
-Las filas de albaranes aparecen como "Albarán nº: XXXX Fecha: DD/MM/AAAA ... IMPORTE" o "Albarán 26/246, Fecha: 22-04-2026". Cada una es UN ALBARÁN, no un producto.
-Para cada albarán extrae: num_albaran (ej. "AD-0327707"), fecha e importe. Extrae TODOS los que veas. Si alguno no tiene importe, pon importe:null.`;
+Las filas de albaranes aparecen como "Albarán nº: XXXX Fecha: DD/MM/AAAA ... IMPORTE" o "Albarán 26/246, Fecha: 22-04-2026". Cada número de albarán es UNO solo.
+IMPORTANTE: algunos proveedores ponen el número y fecha del albarán en una fila y DEBAJO el desglose de sus productos (varias líneas). En ese caso NO repitas el albarán por cada producto: agrupa todos los productos bajo su albarán y suma sus importes para dar UN único importe total por albarán.
+El resultado debe tener un albarán por número distinto, con su fecha y su importe total. Extrae TODOS los albaranes. Si alguno no tiene importe visible, pon importe:null.`;
   const instrAlbaran=`Un ALBARÁN lleva detalle de productos. Extrae en "lineas" cada producto: código, nombre, cantidad, precio_unit e importe.`;
 
   if(tipo==='factura'){
@@ -627,13 +628,7 @@ ${formaAlbaran}`;
     ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
     : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}};
   const respuestaCruda=await callAI([block,{type:"text",text:prompt}]);
-  console.log('=== OCR diagnóstico ===');
-  console.log('Tipo seleccionado:',tipo);
-  console.log('Respuesta CRUDA de la IA:',respuestaCruda);
   const d=parseJson(respuestaCruda);
-  console.log('JSON parseado:',d);
-  console.log('Albaranes detectados:',d.albaranes);
-  console.log('=======================');
   const canal=d.canal&&CENTROS.includes(d.canal)?d.canal:null;
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
   const docTipo=(tipo==='auto')?(d.tipo||'factura'):tipo;
@@ -649,7 +644,7 @@ ${formaAlbaran}`;
         const mFecha=txt.match(/(\d{2}[\/.-]\d{2}[\/.-]\d{2,4})/);
         return {num_albaran:l.id_producto||(mNum?mNum[1]:'')||'',fecha:mFecha?mFecha[1]:null,importe:num(l.importe)};
       });
-    if(rescatados.length){d.albaranes=rescatados;d.lineas=[];console.log('Rescatados',rescatados.length,'albaranes de lineas');}
+    if(rescatados.length){d.albaranes=rescatados;d.lineas=[];}
   }
 
   // 1) imagen a Storage
@@ -685,6 +680,22 @@ ${formaAlbaran}`;
   }
   // ¿cuadra?
   const esFactura=(docTipo==='factura');
+  // RED DE SEGURIDAD: consolidar albaranes repetidos (mismo nº) sumando sus importes
+  if(esFactura && Array.isArray(d.albaranes) && d.albaranes.length){
+    const mapa=new Map();
+    for(const a of d.albaranes){
+      const k=String(a.num_albaran||'').trim().toUpperCase()||('__'+Math.random());
+      if(mapa.has(k)){
+        const prev=mapa.get(k);
+        const imp=(num(prev.importe)||0)+(num(a.importe)||0);
+        prev.importe=imp;
+        if(!prev.fecha&&a.fecha)prev.fecha=a.fecha;
+      }else{
+        mapa.set(k,{num_albaran:a.num_albaran||'',fecha:a.fecha||null,importe:num(a.importe)});
+      }
+    }
+    d.albaranes=[...mapa.values()];
+  }
   if(estadoDet==='CORRECTO'){
     if(esFactura){
       // factura: no tiene detalle de productos. Cuadre básico: que tenga total.
