@@ -84,6 +84,12 @@
   .link{color:var(--wine);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
   .del{cursor:pointer;opacity:.55;font-size:15px}
   .del:hover{opacity:1}
+  .aviso{background:var(--warn-soft);border:1px solid #e8cfa0;border-radius:11px;padding:13px 16px;margin-bottom:16px;
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:14px;color:var(--warn)}
+  .aviso .btn{padding:7px 13px;font-size:13px}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:var(--warn-soft);color:var(--warn);border:1px solid #e8cfa0;
+    border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600}
+  .swi{cursor:pointer;font-size:18px;user-select:none}
   .btn.del-btn{color:var(--wine);border-color:var(--wine-soft)}
   .btn.del-btn:hover{background:var(--wine);color:#fff;border-color:var(--wine)}
 
@@ -271,9 +277,11 @@
     <!-- PROVEEDORES -->
     <section id="v-proveedores" class="view">
       <div class="panel">
+        <div id="avisoNuevos" class="aviso" style="display:none"></div>
         <div class="barrow">
           <div class="total"><small>Proveedores</small><span id="provCount">0</span></div>
-          <div style="display:flex;gap:10px">
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn ghost" onclick="importarProveedores()">⬇ Importar lista</button>
             <button class="btn ghost" onclick="loadProveedores()">↻ Refrescar</button>
             <button class="btn" onclick="exportProv()">Exportar Excel</button>
           </div>
@@ -284,8 +292,8 @@
             <tbody id="provBody"></tbody>
           </table>
         </div>
-        <div id="emptyP" class="empty" style="display:none">Aún no hay proveedores. Aparecerán al procesar facturas.</div>
-        <p class="hint">El nombre y el CIF son editables (clic en la celda). El CIF identifica al proveedor: si dos facturas traen el mismo CIF, se agrupan en una sola ficha.</p>
+        <div id="emptyP" class="empty" style="display:none">Aún no hay proveedores. Importa tu lista o procesa facturas.</div>
+        <p class="hint">Todos los campos son editables (clic en la celda). El casado de albaranes usa primero el CIF y, si falla, el nombre. "Importar lista" carga tus proveedores autorizados (no duplica los que ya estén).</p>
       </div>
     </section>
 
@@ -356,6 +364,25 @@ function setSort(tabla,colKey){
   if(st.key===colKey)st.dir*=-1; else{st.key=colKey;st.dir=1;}
   ({compras:renderTable,albaranes:renderAlb,proveedores:renderProv,productos:renderProd}[tabla])();
 }
+
+/* ---------- normalización para casar proveedores ---------- */
+const PROV_SEED=[{"nif":"41502082P","nombre":"MENORCA VA DE VI","categoria":"SALA","critico":true,"pautas":"A veces dice cajas y botellas. Cargar botellas."},{"nif":"41509848T","nombre":"BOLETS DE MENORCA","categoria":"COCINA","critico":false,"pautas":""},{"nif":"41739670Y","nombre":"MARC CASASNOVAS BENEJAM","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A07027261","nombre":"QUELY SA","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A07051212","nombre":"MIGUEL PONS JUSTO, S.A.","categoria":"SALA","critico":true,"pautas":"A veces dice cajas y botellas. Cargar botellas."},{"nif":"A07111156","nombre":"MENORCA FRUIT","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A23015290","nombre":"Patrick de la CHESNAIS","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A25041146","nombre":"LACREM, S.A.U.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A58592627","nombre":"AGUSTÍN TORRELLA, S.A.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B07020134","nombre":"HIJOS DE RAMÓN OLIVER, SL","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B07069594","nombre":"Distribuciones Goñalons, S.L.","categoria":"SALA","critico":true,"pautas":""},{"nif":"B07265242","nombre":"PEIXOS EMILIO, S.L.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B07458441","nombre":"COMERCIAL CATCHOT S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B07458995","nombre":"ILLA FRUITS S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B07568488","nombre":"BIONA S.L","categoria":"SALA","critico":true,"pautas":""},{"nif":"B07596174","nombre":"DALRIT, S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B07710965","nombre":"CÁRNICAS VIPER S.L.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B07750409","nombre":"J. J. CARRERAS ALIMENTACIÓN","categoria":"COCINA","critico":true,"pautas":"El solomillo, el entrecotte, la lubina… a veces dice cuántas unidades y cuántos kg… poner solo los kg."},{"nif":"B07773450","nombre":"GRANJA AVICOLA CONSELL, S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B16505497","nombre":"SASTRE CONGELATS 2017, S.L","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B16617870","nombre":"DUCHISELA INDUSTRIA CARNICA, SL","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B25028515","nombre":"JOVÉ VIÑES, S.L.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B26551412","nombre":"Coca-Cola Europacific Partner Iberia, S.L","categoria":"SALA","critico":true,"pautas":""},{"nif":"B42120488","nombre":"PAIN PIGALLE SL","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57075665","nombre":"DE VINS MENORCA, S. L.","categoria":"SALA","critico":true,"pautas":""},{"nif":"B57125221","nombre":"EXCLUSIVAS CATCH S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57162000","nombre":"ES REBOST DE BONATECA S.L.","categoria":"SALA","critico":true,"pautas":"A veces dice cajas y botellas. Cargar botellas."},{"nif":"B57261695","nombre":"Gelmarfred s.l.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57499766","nombre":"Patrick de la CHESNAIS Explotación Agrícola ES BARRACONS","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57694937","nombre":"EMBOTITS RAIMA, S.L.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B57738270","nombre":"SAVIA RITA, SL.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57806499","nombre":"SOCIETAT D'ARMADORS I MARISCADORS DEL PORT DE MAO SL","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B57842650","nombre":"Dismenorca, S.L.","categoria":"SALA","critico":true,"pautas":""},{"nif":"B57893711","nombre":"COR GELAT, S.L.U.","categoria":"COCINA Y SALA","critico":false,"pautas":""},{"nif":"B57929200","nombre":"AMAPOLA OBRADOR DE PAN","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B65855314","nombre":"Saboor Fine Products S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B66131749","nombre":"SASTRE LOGISTICA 2014, S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B72533094","nombre":"MAS QUE CAFE MENORCA S.L.U","categoria":"COCINA Y SALA","critico":true,"pautas":""},{"nif":"CIF123456","nombre":"ITA SOBRASADA","categoria":"COCINA","critico":false,"pautas":""},{"nif":"E07712946","nombre":"BINISERRAIA S.R.M.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"E75993071","nombre":"LA MIRIENDA OBRADOR CAFÉ","categoria":"COCINA","critico":false,"pautas":""},{"nif":"J57597627","nombre":"CA NAUXILI, S.L","categoria":"COCINA","critico":false,"pautas":""},{"nif":"J57780264","nombre":"Santo Domingo SC - Productes Ecològics Santo Domingo","categoria":"COCINA","critico":false,"pautas":""},{"nif":"J57846586","nombre":"MORVEDRA VELL SRM","categoria":"COCINA","critico":false,"pautas":""}];
+function normNif(s){return s?String(s).toUpperCase().replace(/[^A-Z0-9]/g,''):'';}
+function normName(s){
+  if(!s)return '';
+  s=String(s).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+  s=s.replace(/\b(SLU|SAU|SL|SA)\b/g,'');
+  s=s.replace(/[^A-Z0-9 ]/g,' ');
+  return s.replace(/\s+/g,' ').trim();
+}
+// busca un proveedor existente que case por CIF (norm) y si no por nombre (norm)
+function matchProveedor(nif,nombre){
+  const nn=normNif(nif), na=normName(nombre);
+  if(nn){const x=proveedores.find(p=>p.nif&&normNif(p.nif)===nn);if(x)return x;}
+  if(na){const x=proveedores.find(p=>normName(p.nombre)===na);if(x)return x;}
+  return null;
+}
+
 
 /* ---------- arranque ---------- */
 window.addEventListener('DOMContentLoaded',()=>{
@@ -489,6 +516,10 @@ async function procesarCola(){
 
 async function procesarUno(c){
   const reglasTxt=reglas.length?reglas.map(r=>'- '+r.texto).join('\n'):'(todavía sin reglas)';
+  const conPautas=proveedores.filter(p=>p.pautas&&p.pautas.trim());
+  const pautasTxt=conPautas.length
+    ? conPautas.map(p=>`- ${p.nombre}${p.nif?' (CIF '+p.nif+')':''}: ${p.pautas}`).join('\n')
+    : '(sin pautas específicas)';
   const prompt=`Eres un OCR contable para un grupo de hostelería. Extrae los datos del documento adjunto.
 
 CENTROS DE COSTE válidos (canal): ${CENTROS.join(', ')}.
@@ -496,6 +527,9 @@ TIPO esperado: ${tipo==='auto'?'detéctalo tú (factura o albaran)':tipo}.
 
 REGLAS de clasificación que debes aplicar:
 ${reglasTxt}
+
+PAUTAS POR PROVEEDOR (aplica la del proveedor que detectes en este documento, si coincide):
+${pautasTxt}
 
 Asigna "canal" SOLO si una regla o el propio documento lo permite con seguridad. Si no estás seguro, deja canal:null.
 El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet).
@@ -513,12 +547,19 @@ Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
   let imagen_url=null;
   try{imagen_url=await sbUpload(c.file);}catch(e){console.warn('Storage falló:',e.message);}
 
-  // 2) maestro de proveedores (por CIF)
+  // 2) maestro de proveedores: casar por CIF y si falla por nombre
   let proveedor_id=null;
-  if(d.proveedor_nif){
-    const ex=await sb(`compras_proveedor?nif=eq.${encodeURIComponent(d.proveedor_nif)}&select=id`);
-    if(ex.length)proveedor_id=ex[0].id;
-    else{const np=await sb('compras_proveedor',{method:'POST',body:JSON.stringify({nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif})});proveedor_id=np[0].id;}
+  const match=matchProveedor(d.proveedor_nif,d.proveedor);
+  if(match){
+    proveedor_id=match.id;
+  }else if(d.proveedor||d.proveedor_nif){
+    // proveedor no reconocido: se crea pero NO autorizado, para que salte el aviso
+    const np=await sb('compras_proveedor',{method:'POST',body:JSON.stringify({
+      nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,
+      nif_norm:normNif(d.proveedor_nif),nombre_norm:normName(d.proveedor),autorizado:false})});
+    proveedor_id=np[0].id;
+    // refrescar el array local para que el siguiente documento ya lo conozca
+    proveedores.push({id:np[0].id,nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,autorizado:false,_n:0});
   }
 
   // 3) documento
@@ -816,7 +857,7 @@ function exportProd(){
 /* ---------- proveedores ---------- */
 async function loadProveedores(){
   try{
-    proveedores=await sb('compras_proveedor?select=id,nombre,nif&order=nombre.asc');
+    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,critico,pautas,autorizado,muestra_url&order=nombre.asc');
     const docs=await sb('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
     proveedores.forEach(p=>p._n=cnt[p.id]||0);
@@ -826,24 +867,65 @@ async function loadProveedores(){
 function renderProv(){
   let rows=[...proveedores];
   const st=sortState.proveedores;
-  const keymap={nombre:p=>p.nombre,nif:p=>p.nif,docs:p=>p._n};
+  const keymap={nombre:p=>p.nombre,nif:p=>p.nif,cat:p=>p.categoria,crit:p=>p.critico?1:0,docs:p=>p._n};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  // aviso de proveedores nuevos sin autorizar (estilo Ratios)
+  const nuevos=proveedores.filter(p=>p.autorizado===false);
+  const av=document.getElementById('avisoNuevos');
+  if(nuevos.length){
+    av.style.display='flex';
+    av.innerHTML=`⚠️ Hay ${nuevos.length} proveedor${nuevos.length>1?'es':''} nuevo${nuevos.length>1?'s':''} sin autorizar, detectado${nuevos.length>1?'s':''} al procesar documentos. Revísalos: corrige el nombre/CIF si hace falta y autorízalos.`;
+  }else av.style.display='none';
   document.getElementById('headProv').innerHTML=
-    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+thh('proveedores','docs','Documentos','num');
+    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+thh('proveedores','cat','Categoría')+
+    thh('proveedores','crit','Crítico')+'<th>Pautas</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
   const tb=document.getElementById('provBody');
   document.getElementById('provCount').textContent=proveedores.length;
   document.getElementById('emptyP').style.display=proveedores.length?'none':'block';
-  tb.innerHTML=rows.map(p=>`<tr>
+  tb.innerHTML=rows.map(p=>`<tr style="${p.autorizado===false?'background:#fdf4e8':''}">
     <td><span class="editable" onblur="saveProv('${p.id}','nombre',this.textContent)" contenteditable>${p.nombre||''}</span></td>
     <td><span class="editable" onblur="saveProv('${p.id}','nif',this.textContent)" contenteditable>${p.nif||'—'}</span></td>
-    <td class="num">${p._n}</td></tr>`).join('');
+    <td><span class="editable" onblur="saveProv('${p.id}','categoria',this.textContent)" contenteditable>${p.categoria||'—'}</span></td>
+    <td><span class="swi" onclick="toggleCritico('${p.id}')" title="Marcar crítico">${p.critico?'🔴':'⚪️'}</span></td>
+    <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pautas',this.textContent)" contenteditable>${p.pautas||'—'}</span></td>
+    <td class="num">${p._n}</td>
+    <td>${p.autorizado===false?`<span class="chip">nuevo</span> <span class="link" onclick="autorizarProv('${p.id}')">autorizar</span>`:'<span class="pill ok">ok</span>'}</td>
+  </tr>`).join('');
+}
+async function toggleCritico(id){
+  const p=proveedores.find(x=>x.id===id);if(!p)return;
+  const nv=!p.critico;
+  try{await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({critico:nv})});p.critico=nv;renderProv();}
+  catch(err){toast('Error: '+err.message,true);}
+}
+async function autorizarProv(id){
+  try{await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({autorizado:true})});
+    const p=proveedores.find(x=>x.id===id);if(p)p.autorizado=true;renderProv();toast('Proveedor autorizado');}
+  catch(err){toast('Error: '+err.message,true);}
+}
+async function importarProveedores(){
+  if(!confirm(`Se cargarán ${PROV_SEED.length} proveedores de tu lista. Los que ya existan (mismo CIF o nombre) se omiten, no se duplican. ¿Continuar?`))return;
+  let nuevos=0,omitidos=0;
+  for(const s of PROV_SEED){
+    if(matchProveedor(s.nif,s.nombre)){omitidos++;continue;}
+    try{
+      const np=await sb('compras_proveedor',{method:'POST',body:JSON.stringify({
+        nombre:s.nombre,nif:s.nif||null,categoria:s.categoria||null,critico:!!s.critico,pautas:s.pautas||null,
+        nif_norm:normNif(s.nif),nombre_norm:normName(s.nombre),autorizado:true})});
+      proveedores.push({id:np[0].id,nombre:s.nombre,nif:s.nif,categoria:s.categoria,critico:!!s.critico,pautas:s.pautas,autorizado:true,_n:0});
+      nuevos++;
+    }catch(e){console.warn('import',s.nombre,e.message);}
+  }
+  await loadProveedores();
+  toast(`Importados ${nuevos} · omitidos ${omitidos} (ya existían)`);
 }
 function exportProv(){
   let rows=[...proveedores];
   const st=sortState.proveedores;
-  const keymap={nombre:p=>p.nombre,nif:p=>p.nif,docs:p=>p._n};
+  const keymap={nombre:p=>p.nombre,nif:p=>p.nif,cat:p=>p.categoria,crit:p=>p.critico?1:0,docs:p=>p._n};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
-  const data=rows.map(p=>({Nombre:p.nombre||'','CIF / NIF':p.nif||'',Documentos:p._n??0}));
+  const data=rows.map(p=>({Nombre:p.nombre||'','CIF / NIF':p.nif||'',Categoría:p.categoria||'',
+    Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
   if(!data.length){toast('No hay proveedores que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Proveedores');
