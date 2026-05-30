@@ -366,7 +366,7 @@ const BUCKET="documentos";
 let tipo="auto";
 let cola=[];               // [{file, b64, mime, status}]
 let compras=[], reglas=[], albaranes=[], proveedores=[], productos=[], facturas=[];
-let revisarDoc=null, revisarLineas=[];   // documento abierto en el modal de revisión
+let revisarDoc=null, revisarLineas=[], revisarAlbaranes=[];   // documento abierto en el modal de revisión
 
 /* ---------- ordenación genérica de tablas ---------- */
 const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},facturas:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1}};
@@ -596,10 +596,15 @@ El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del c
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
   const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
 "lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
-  const instrFactura=`Una FACTURA agrupa varios ALBARANES (notas de entrega). NO extraigas productos: extrae la lista de albaranes que la factura menciona.
-Las filas de albaranes aparecen como "Albarán nº: XXXX Fecha: DD/MM/AAAA ... IMPORTE" o "Albarán 26/246, Fecha: 22-04-2026". Cada número de albarán es UNO solo.
-IMPORTANTE: algunos proveedores ponen el número y fecha del albarán en una fila y DEBAJO el desglose de sus productos (varias líneas). En ese caso NO repitas el albarán por cada producto: agrupa todos los productos bajo su albarán y suma sus importes para dar UN único importe total por albarán.
-El resultado debe tener un albarán por número distinto, con su fecha y su importe total. Extrae TODOS los albaranes. Si alguno no tiene importe visible, pon importe:null.`;
+  const instrFactura=`Una FACTURA agrupa varios ALBARANES (notas de entrega). NO extraigas productos como tales: tu salida es UNA fila por albarán.
+
+Cómo leer los albaranes:
+- Cada albarán empieza con una línea de CABECERA tipo "Albarán nº: XXXX  Fecha: DD/MM/AAAA" o "Albarán..: 33061 de fecha: 27/04/2026". Ese XXXX es el número de albarán.
+- DEBAJO de esa cabecera puede haber una o varias líneas de PRODUCTO (con su código de artículo, descripción, lote, caducidad, cantidad, precio e importe). Esas líneas pertenecen al albarán de la cabecera anterior.
+- CUIDADO: la primera columna de las líneas de producto es el CÓDIGO DE ARTÍCULO (ej. 013782, 015048), NO es un número de albarán. No lo confundas. El número de albarán SOLO aparece en las líneas de cabecera "Albarán nº...".
+- Para cada albarán, SUMA los importes de todas sus líneas de producto y da ese total como "importe" del albarán. Si la cabecera ya trae un importe total, úsalo.
+
+Resultado: una fila por número de albarán distinto, con su fecha y su importe total (suma de su desglose). Extrae TODOS los albaranes. Si alguno no tiene importe, pon importe:null.`;
   const instrAlbaran=`Un ALBARÁN lleva detalle de productos. Extrae en "lineas" cada producto: código, nombre, cantidad, precio_unit e importe.`;
 
   if(tipo==='factura'){
@@ -901,6 +906,7 @@ async function revisar(docId){
   const tituloTipo=(a.tipo==='factura')?'Factura':'Albarán';
   const lineas=(a.tipo==='factura')?[]:await sb(`compras_linea?doc_id=eq.${docId}&select=id,id_producto,producto,cantidad,precio_unit,importe&order=created_at.asc`);
   revisarLineas=lineas;
+  revisarAlbaranes=(a.tipo==='factura'&&Array.isArray(a.albaranes_detectados))?a.albaranes_detectados.map(x=>({...x})):[];
   document.getElementById('mTitle').textContent=`${tituloTipo} · ${a.proveedor||''} ${a.num_documento?'· '+a.num_documento:''}`;
   // imagen
   const ic=document.getElementById('mImg');
@@ -925,25 +931,36 @@ async function revisar(docId){
 function renderDetalle(){
   const a=revisarDoc;
   const dc=document.getElementById('mDet');
-  // ===== FACTURA: mostrar lista de albaranes detectados =====
+  // ===== FACTURA: lista de albaranes detectados (EDITABLE) =====
   if(a.tipo==='factura'){
-    const albs=Array.isArray(a.albaranes_detectados)?a.albaranes_detectados:[];
+    const albs=revisarAlbaranes.filter(x=>!x._del);
     const sumaAlb=albs.reduce((s,x)=>s+(num(x.importe)||0),0);
+    const ed='contenteditable class="ce"';
+    const difTotal=(a.total!=null)?(sumaAlb-num(a.total)):null;
     dc.innerHTML=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
         ${estBadge(a.estado_detalle)}
         <span class="pill ${a.canal?'ok':'rev'}">${a.canal||'sin centro'}</span>
         <span class="hint" style="margin:0">${a.fecha||''} · total ${fmt(a.total)}</span></div>
       <div style="font-size:13px;margin-bottom:12px">Base imponible: <b>${fmt(a.base)}</b></div>
       <div style="font-weight:600;font-size:13px;margin-bottom:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Albaranes incluidos en esta factura</div>
-      <table><thead><tr><th>Nº albarán</th><th>Fecha</th><th class="num">Importe</th></tr></thead><tbody>
-      ${albs.length?albs.map(x=>`<tr><td>${x.num_albaran||''}</td><td>${x.fecha||''}</td><td class="num">${x.importe!=null?fmt(x.importe):'—'}</td></tr>`).join('')
-        :'<tr><td colspan="3" class="hint">El OCR no detectó albaranes en esta factura. Cuando montemos la conciliación, podrás añadirlos a mano.</td></tr>'}
+      <table><thead><tr><th>Nº albarán</th><th>Fecha</th><th class="num">Importe</th><th></th></tr></thead><tbody>
+      ${revisarAlbaranes.length?revisarAlbaranes.map((x,i)=>x._del?'':`<tr>
+        <td><span ${ed} data-i="${i}" data-f="num_albaran">${x.num_albaran||''}</span></td>
+        <td><span ${ed} data-i="${i}" data-f="fecha">${x.fecha||''}</span></td>
+        <td class="num"><span ${ed} data-i="${i}" data-f="importe">${x.importe!=null?Number(x.importe).toFixed(2):''}</span></td>
+        <td><span class="del" onclick="borrarAlb(${i})" title="Quitar">🗑</span></td></tr>`).join('')
+        :'<tr><td colspan="4" class="hint">El OCR no detectó albaranes. Añádelos a mano abajo.</td></tr>'}
       </tbody></table>
-      ${albs.length?`<div class="hint" style="margin-top:8px">Suma de albaranes: ${fmt(sumaAlb)} ${a.total!=null?(Math.abs(sumaAlb-num(a.total))<0.15?'· ✓ cuadra con el total':'· difiere del total en '+fmt(sumaAlb-num(a.total))):''}</div>`:''}
-      <p class="hint" style="margin-top:14px">La factura no lleva detalle de productos: ese detalle está en los albaranes. La conciliación factura↔albaranes la montaremos en la siguiente versión.</p>
+      <div style="margin-top:8px"><span class="link" onclick="anadirAlb()">+ añadir albarán</span></div>
+      <div class="aviso" id="avAlb" style="margin-top:12px;${(difTotal!=null&&Math.abs(difTotal)<0.15)?'background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)':''}">
+        ${difTotal==null?`Suma de albaranes: ${fmt(sumaAlb)}`:(Math.abs(difTotal)<0.15?`✓ Suma de albaranes ${fmt(sumaAlb)} cuadra con el total`:`⚠️ Suma de albaranes ${fmt(sumaAlb)} difiere del total en ${fmt(difTotal)}`)}
+      </div>
+      <p class="hint" style="margin-top:14px">Edita cualquier celda comparando con la foto. Útil para facturas con formatos difíciles. Al guardar se actualiza la lista.</p>
       <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn" onclick="guardarAlbaranes()">Guardar cambios</button>
         <button class="btn ghost del-btn" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')">🗑 Borrar documento</button>
       </div>`;
+    dc.querySelectorAll('.ce').forEach(el=>el.addEventListener('input',recalcAlb));
     return;
   }
   // ===== ALBARÁN: tabla editable de productos =====
@@ -1006,6 +1023,44 @@ function recalcAviso(){
 }
 function borrarLinea(i){revisarLineas[i]._del=true;renderDetalle();}
 function anadirLinea(){revisarLineas.push({id_producto:'',producto:'',cantidad:null,precio_unit:null,importe:null,_new:true});renderDetalle();}
+function borrarAlb(i){revisarAlbaranes[i]._del=true;renderDetalle();}
+function anadirAlb(){revisarAlbaranes.push({num_albaran:'',fecha:null,importe:null,_new:true});renderDetalle();}
+function recalcAlb(){
+  const dc=document.getElementById('mDet');
+  let suma=0;
+  revisarAlbaranes.forEach((x,i)=>{
+    if(x._del)return;
+    const cel=dc.querySelector(`[data-i="${i}"][data-f="importe"]`);
+    if(cel)suma+=num(cel.textContent)||0;
+  });
+  const av=document.getElementById('avAlb');if(!av)return;
+  const tot=revisarDoc.total;
+  if(tot==null){av.textContent=`Suma de albaranes: ${fmt(suma)}`;return;}
+  const dif=suma-num(tot);
+  if(Math.abs(dif)<0.15){
+    av.style.background='var(--ok-soft)';av.style.borderColor='#bcd9c2';av.style.color='var(--ok)';
+    av.innerHTML=`✓ Suma de albaranes ${fmt(suma)} cuadra con el total`;
+  }else{
+    av.style.background='var(--warn-soft)';av.style.borderColor='#e8cfa0';av.style.color='var(--warn)';
+    av.innerHTML=`⚠️ Suma de albaranes ${fmt(suma)} difiere del total en ${fmt(dif)}`;
+  }
+}
+async function guardarAlbaranes(){
+  const dc=document.getElementById('mDet');
+  const nuevos=[];
+  revisarAlbaranes.forEach((x,i)=>{
+    if(x._del)return;
+    const g=f=>{const c=dc.querySelector(`[data-i="${i}"][data-f="${f}"]`);return c?c.textContent.trim():'';};
+    nuevos.push({num_albaran:g('num_albaran')||'',fecha:g('fecha')||null,importe:num(g('importe'))});
+  });
+  try{
+    await sb(`compras_doc?id=eq.${revisarDoc.id}`,{method:'PATCH',body:JSON.stringify({albaranes_detectados:nuevos})});
+    revisarDoc.albaranes_detectados=nuevos;
+    revisarAlbaranes=nuevos.map(x=>({...x}));
+    toast('Albaranes guardados');
+    renderDetalle();
+  }catch(err){toast('Error al guardar: '+err.message,true);}
+}
 async function guardarRevision(){
   const dc=document.getElementById('mDet');
   // recoger valores editados de cabecera
