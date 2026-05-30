@@ -1055,15 +1055,34 @@ function fusionUI(id){
   if(isNaN(idx)||idx<0||idx>=ids.length){toast('Número no válido',true);return;}
   fusionarPar(id,ids[idx]);
 }
+// motor de fusión seguro: mueve docs y productos, resolviendo choques de referencia
+async function ejecutarFusion(idOrigen,idDestino,nombreDestino){
+  // 1) mover documentos
+  await sb(`compras_doc?proveedor_id=eq.${idOrigen}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idDestino})});
+  // 2) productos: resolver uno a uno por si chocan referencias
+  const prodOrigen=await sb(`compras_producto?proveedor_id=eq.${idOrigen}&select=id,ref_proveedor`);
+  const prodDestino=await sb(`compras_producto?proveedor_id=eq.${idDestino}&select=id,ref_proveedor`);
+  const mapaDestino={};prodDestino.forEach(p=>{mapaDestino[(p.ref_proveedor||'').trim()]=p.id;});
+  for(const p of prodOrigen){
+    const ref=(p.ref_proveedor||'').trim();
+    if(ref&&mapaDestino[ref]){
+      // ya existe esa referencia en el destino: reapuntar líneas y borrar el duplicado
+      await sb(`compras_linea?producto_id=eq.${p.id}`,{method:'PATCH',body:JSON.stringify({producto_id:mapaDestino[ref]})});
+      await sb(`compras_producto?id=eq.${p.id}`,{method:'DELETE'});
+    }else{
+      await sb(`compras_producto?id=eq.${p.id}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idDestino,proveedor_nombre:nombreDestino})});
+    }
+  }
+  // 3) borrar la ficha de origen
+  await sb(`compras_proveedor?id=eq.${idOrigen}`,{method:'DELETE'});
+}
 async function fusionarPar(idOrigen,idDestino){
   const origen=proveedores.find(p=>p.id===idOrigen), destino=proveedores.find(p=>p.id===idDestino);
   if(!origen||!destino)return;
   let nDocs=0;try{const d=await sb(`compras_doc?proveedor_id=eq.${idOrigen}&select=id`);nDocs=d.length;}catch(e){}
   if(!confirm(`Fusionar:\n\n«${origen.nombre}»  →  «${destino.nombre}»\n\nSe moverán ${nDocs} documento(s) y sus productos a «${destino.nombre}», y se borrará «${origen.nombre}».\n\nNO se puede deshacer. ¿Continuar?`))return;
   try{
-    await sb(`compras_doc?proveedor_id=eq.${idOrigen}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idDestino})});
-    await sb(`compras_producto?proveedor_id=eq.${idOrigen}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idDestino,proveedor_nombre:destino.nombre})});
-    await sb(`compras_proveedor?id=eq.${idOrigen}`,{method:'DELETE'});
+    await ejecutarFusion(idOrigen,idDestino,destino.nombre);
     toast(`Fusionado en «${destino.nombre}»`);
     await loadProveedores();await loadProductos();await loadCompras();await loadAlbaranes();
   }catch(err){toast('Error al fusionar: '+err.message,true);}
@@ -1094,9 +1113,7 @@ async function fusionarProv(idNuevo){
   try{const docs=await sb(`compras_doc?proveedor_id=eq.${idNuevo}&select=id`);nDocs=docs.length;}catch(e){}
   if(!confirm(`Fusionar:\n\n«${nuevo.nombre}»  →  «${bueno.nombre}»\n\nSe moverán ${nDocs} documento(s) y sus productos al proveedor «${bueno.nombre}», y se borrará la ficha «${nuevo.nombre}».\n\nEsta acción NO se puede deshacer. ¿Continuar?`))return;
   try{
-    await sb(`compras_doc?proveedor_id=eq.${idNuevo}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idBueno})});
-    await sb(`compras_producto?proveedor_id=eq.${idNuevo}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idBueno,proveedor_nombre:bueno.nombre})});
-    await sb(`compras_proveedor?id=eq.${idNuevo}`,{method:'DELETE'});
+    await ejecutarFusion(idNuevo,idBueno,bueno.nombre);
     toast(`Fusionado en «${bueno.nombre}» · ${nDocs} doc movidos`);
     await loadProveedores();await loadProductos();await loadCompras();await loadAlbaranes();
   }catch(err){toast('Error al fusionar: '+err.message,true);}
