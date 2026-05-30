@@ -592,28 +592,36 @@ El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del c
 "base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).`;
 
   let prompt;
-  if(tipo==='factura'){
-    // PROMPT ESPECÍFICO DE FACTURA: solo cabecera + lista de albaranes (sin productos)
-    prompt=`${comun}
-
-Este documento es una FACTURA. Una factura de proveedor normalmente AGRUPA VARIOS ALBARANES (notas de entrega). NO extraigas el detalle de productos.
-Tu tarea principal: localizar la lista de albaranes que aparece en la factura y extraer, para CADA uno, su número, su fecha y su importe.
-Los albaranes suelen aparecer como filas tipo "Albarán nº: XXXX  Fecha: DD/MM/AAAA ... IMPORTE" o "Albarán 26/246, Fecha: 22-04-2026". Extrae TODOS los que veas, en orden.
-Si un albarán no muestra importe, pon importe:null. Si la factura realmente no lista ningún albarán, devuelve "albaranes" como lista vacía.
-
-Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
-{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
+  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
+  const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
+"lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
+  const instrFactura=`Una FACTURA agrupa varios ALBARANES (notas de entrega). NO extraigas productos: extrae la lista de albaranes que la factura menciona.
+Las filas de albaranes aparecen como "Albarán nº: XXXX Fecha: DD/MM/AAAA ... IMPORTE" o "Albarán 26/246, Fecha: 22-04-2026". Cada una es UN ALBARÁN, no un producto.
+Para cada albarán extrae: num_albaran (ej. "AD-0327707"), fecha e importe. Extrae TODOS los que veas. Si alguno no tiene importe, pon importe:null.`;
+  const instrAlbaran=`Un ALBARÁN lleva detalle de productos. Extrae en "lineas" cada producto: código, nombre, cantidad, precio_unit e importe.`;
+
+  if(tipo==='factura'){
+    prompt=`${comun}\n\nEste documento es una FACTURA.\n${instrFactura}\n\nDevuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:\n${formaFactura}`;
+  }else if(tipo==='albaran'){
+    prompt=`${comun}\n\nEste documento es un ALBARÁN.\n${instrAlbaran}\n\nDevuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:\n${formaAlbaran}`;
   }else{
-    // PROMPT DE ALBARÁN (o auto): detalle de líneas de producto
+    // AUTO: clasificar primero, y según el tipo colocar los datos en el campo correcto
     prompt=`${comun}
 
-TIPO esperado: ${tipo==='auto'?'detéctalo tú; si es una factura que agrupa albaranes, márcala como "factura"':'albaran'}.
-Este documento es un ALBARÁN. Extrae el detalle de líneas de producto en "lineas": cada producto con su código, nombre, cantidad, precio unitario e importe.
+PASO 1 — CLASIFICA el documento:
+- Es una FACTURA si su encabezado dice "FACTURA", tiene "Nº Factura", o si su cuerpo es una lista de albaranes (filas tipo "Albarán nº: XXXX Fecha: ...").
+- Es un ALBARÁN si es una nota de entrega con detalle de productos (artículos, cantidades, precios).
 
-Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
-{"tipo":"albaran|factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
-"lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
+PASO 2 — EXTRAE según lo que sea:
+- Si es FACTURA: ${instrFactura}
+- Si es ALBARÁN: ${instrAlbaran}
+
+Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor.
+- Si es factura, con esta forma EXACTA (campo "albaranes", SIN "lineas"):
+${formaFactura}
+- Si es albarán, con esta forma EXACTA (campo "lineas", SIN "albaranes"):
+${formaAlbaran}`;
   }
   const block = c.mime==='application/pdf'
     ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
@@ -629,6 +637,20 @@ Devuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:
   const canal=d.canal&&CENTROS.includes(d.canal)?d.canal:null;
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
   const docTipo=(tipo==='auto')?(d.tipo||'factura'):tipo;
+
+  // RED DE SEGURIDAD: si es factura pero la IA metió los albaranes en "lineas"
+  // (filas cuyo texto empieza por "Albarán"), los rescatamos al campo correcto.
+  if(docTipo==='factura' && (!d.albaranes || !d.albaranes.length) && Array.isArray(d.lineas) && d.lineas.length){
+    const rescatados=d.lineas
+      .filter(l=>/albar[áa]n/i.test(l.producto||'')||/^[A-Z]{1,3}[-\s]?\d{4,}/.test((l.producto||'').trim()))
+      .map(l=>{
+        const txt=l.producto||'';
+        const mNum=txt.match(/([A-Z]{1,3}[-\s]?\d{4,})/i);
+        const mFecha=txt.match(/(\d{2}[\/.-]\d{2}[\/.-]\d{2,4})/);
+        return {num_albaran:l.id_producto||(mNum?mNum[1]:'')||'',fecha:mFecha?mFecha[1]:null,importe:num(l.importe)};
+      });
+    if(rescatados.length){d.albaranes=rescatados;d.lineas=[];console.log('Rescatados',rescatados.length,'albaranes de lineas');}
+  }
 
   // 1) imagen a Storage
   let imagen_url=null;
