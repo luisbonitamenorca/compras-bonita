@@ -1039,8 +1039,81 @@ function renderProv(){
     <td><span class="swi" onclick="toggleCritico('${p.id}')" title="Marcar crítico">${p.critico?'🔴':'⚪️'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pautas',this.textContent)" contenteditable>${p.pautas||'—'}</span></td>
     <td class="num">${p._n}</td>
-    <td>${p.autorizado===false?`<span class="chip">nuevo</span> <span class="link" onclick="autorizarProv('${p.id}')">autorizar</span>`:'<span class="pill ok">ok</span>'}</td>
+    <td>${p.autorizado===false?accionesNuevo(p):`<span class="pill ok">ok</span> <span class="link" style="font-size:12px" onclick="fusionUI('${p.id}')">fusionar</span>`}</td>
   </tr>`).join('');
+}
+// fusión para proveedores ya autorizados (duplicados antiguos)
+function fusionUI(id){
+  const p=proveedores.find(x=>x.id===id);if(!p)return;
+  const opciones=proveedores.filter(x=>x.id!==id).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''))
+    .map(x=>`${x.nombre}${x.nif?' ('+x.nif+')':''}`);
+  const lista=opciones.map((o,i)=>`${i+1}. ${o}`).join('\n');
+  const ids=proveedores.filter(x=>x.id!==id).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||'')).map(x=>x.id);
+  const sel=prompt(`Fusionar «${p.nombre}» dentro de otro proveedor.\n\nEscribe el número del proveedor DESTINO (el que se queda):\n\n${lista}`);
+  if(!sel)return;
+  const idx=parseInt(sel,10)-1;
+  if(isNaN(idx)||idx<0||idx>=ids.length){toast('Número no válido',true);return;}
+  fusionarPar(id,ids[idx]);
+}
+async function fusionarPar(idOrigen,idDestino){
+  const origen=proveedores.find(p=>p.id===idOrigen), destino=proveedores.find(p=>p.id===idDestino);
+  if(!origen||!destino)return;
+  let nDocs=0;try{const d=await sb(`compras_doc?proveedor_id=eq.${idOrigen}&select=id`);nDocs=d.length;}catch(e){}
+  if(!confirm(`Fusionar:\n\n«${origen.nombre}»  →  «${destino.nombre}»\n\nSe moverán ${nDocs} documento(s) y sus productos a «${destino.nombre}», y se borrará «${origen.nombre}».\n\nNO se puede deshacer. ¿Continuar?`))return;
+  try{
+    await sb(`compras_doc?proveedor_id=eq.${idOrigen}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idDestino})});
+    await sb(`compras_producto?proveedor_id=eq.${idOrigen}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idDestino,proveedor_nombre:destino.nombre})});
+    await sb(`compras_proveedor?id=eq.${idOrigen}`,{method:'DELETE'});
+    toast(`Fusionado en «${destino.nombre}»`);
+    await loadProveedores();await loadProductos();await loadCompras();await loadAlbaranes();
+  }catch(err){toast('Error al fusionar: '+err.message,true);}
+}
+function accionesNuevo(p){
+  // opciones de fusión: todos los proveedores autorizados, ordenados por nombre
+  const opciones=proveedores.filter(x=>x.autorizado!==false&&x.id!==p.id)
+    .sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''))
+    .map(x=>`<option value="${x.id}">${(x.nombre||'').replace(/"/g,'')}</option>`).join('');
+  return `<div style="display:flex;flex-direction:column;gap:6px;min-width:180px">
+    <div><span class="chip">nuevo</span></div>
+    <span class="link" onclick="autorizarProv('${p.id}')">✓ Autorizar como nuevo</span>
+    <div style="display:flex;gap:5px;align-items:center">
+      <select id="fus_${p.id}" style="font-size:12px;padding:5px 7px;flex:1"><option value="">fusionar con…</option>${opciones}</select>
+      <button class="btn sm" style="padding:5px 9px" onclick="fusionarProv('${p.id}')">unir</button>
+    </div>
+    <span class="link" style="color:var(--muted)" onclick="rechazarProv('${p.id}')">✕ Rechazar</span>
+  </div>`;
+}
+async function fusionarProv(idNuevo){
+  const sel=document.getElementById('fus_'+idNuevo);
+  const idBueno=sel.value;
+  if(!idBueno){toast('Elige con qué proveedor fusionar',true);return;}
+  const nuevo=proveedores.find(p=>p.id===idNuevo), bueno=proveedores.find(p=>p.id===idBueno);
+  if(!nuevo||!bueno)return;
+  // contar documentos del proveedor "nuevo" que se van a mover
+  let nDocs=0;
+  try{const docs=await sb(`compras_doc?proveedor_id=eq.${idNuevo}&select=id`);nDocs=docs.length;}catch(e){}
+  if(!confirm(`Fusionar:\n\n«${nuevo.nombre}»  →  «${bueno.nombre}»\n\nSe moverán ${nDocs} documento(s) y sus productos al proveedor «${bueno.nombre}», y se borrará la ficha «${nuevo.nombre}».\n\nEsta acción NO se puede deshacer. ¿Continuar?`))return;
+  try{
+    await sb(`compras_doc?proveedor_id=eq.${idNuevo}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idBueno})});
+    await sb(`compras_producto?proveedor_id=eq.${idNuevo}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idBueno,proveedor_nombre:bueno.nombre})});
+    await sb(`compras_proveedor?id=eq.${idNuevo}`,{method:'DELETE'});
+    toast(`Fusionado en «${bueno.nombre}» · ${nDocs} doc movidos`);
+    await loadProveedores();await loadProductos();await loadCompras();await loadAlbaranes();
+  }catch(err){toast('Error al fusionar: '+err.message,true);}
+}
+async function rechazarProv(id){
+  const p=proveedores.find(x=>x.id===id);if(!p)return;
+  // ¿tiene documentos? si sí, no se puede borrar limpio
+  let nDocs=0;
+  try{const docs=await sb(`compras_doc?proveedor_id=eq.${id}&select=id`);nDocs=docs.length;}catch(e){}
+  if(nDocs>0){
+    toast(`«${p.nombre}» tiene ${nDocs} documento(s). Fusiónalo con otro en vez de rechazar, o quedarían huérfanos.`,true);
+    return;
+  }
+  if(!confirm(`Rechazar y borrar la ficha «${p.nombre}»?\n\nNo tiene documentos asociados, así que es seguro. No se puede deshacer.`))return;
+  try{await sb(`compras_proveedor?id=eq.${id}`,{method:'DELETE'});
+    proveedores=proveedores.filter(x=>x.id!==id);renderProv();toast('Proveedor rechazado');}
+  catch(err){toast('Error: '+err.message,true);}
 }
 async function toggleCritico(id){
   const p=proveedores.find(x=>x.id===id);if(!p)return;
