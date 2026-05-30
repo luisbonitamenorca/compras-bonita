@@ -72,6 +72,10 @@
   table{width:100%;border-collapse:collapse;font-size:13.5px}
   th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600;
     padding:9px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th.sortable{cursor:pointer;user-select:none}
+  th.sortable:hover{color:var(--wine)}
+  th .arr{opacity:.35;font-size:10px;margin-left:3px}
+  th.sorted .arr{opacity:1;color:var(--wine)}
   td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
   tr:hover td{background:#fffaf2}
   td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -211,10 +215,7 @@
         </div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr>
-              <th>Fecha</th><th>Proveedor</th><th>Cód.</th><th>Producto</th>
-              <th class="num">Cant.</th><th class="num">Importe</th><th>Centro</th><th>Doc</th><th></th>
-            </tr></thead>
+            <thead><tr id="headCompras"></tr></thead>
             <tbody id="tbody"></tbody>
           </table>
         </div>
@@ -227,13 +228,14 @@
       <div class="panel">
         <div class="barrow">
           <div class="total"><small>Albaranes registrados</small><span id="albCount">0</span></div>
-          <button class="btn ghost" onclick="loadAlbaranes()">↻ Refrescar</button>
+          <div style="display:flex;gap:10px">
+            <button class="btn ghost" onclick="loadAlbaranes()">↻ Refrescar</button>
+            <button class="btn" onclick="exportAlb()">Exportar Excel</button>
+          </div>
         </div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr>
-              <th>Fecha</th><th>Proveedor</th><th>Nº doc</th><th>Centro</th><th class="num">Total</th><th>Estado</th><th>Revisar</th><th></th>
-            </tr></thead>
+            <thead><tr id="headAlb"></tr></thead>
             <tbody id="albBody"></tbody>
           </table>
         </div>
@@ -257,9 +259,7 @@
         </div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr>
-              <th>Cód. interno</th><th>Producto</th><th>Ref. proveedor</th><th>Proveedor</th><th class="num">Últ. precio</th>
-            </tr></thead>
+            <thead><tr id="headProd"></tr></thead>
             <tbody id="prodBody"></tbody>
           </table>
         </div>
@@ -273,11 +273,14 @@
       <div class="panel">
         <div class="barrow">
           <div class="total"><small>Proveedores</small><span id="provCount">0</span></div>
-          <button class="btn ghost" onclick="loadProveedores()">↻ Refrescar</button>
+          <div style="display:flex;gap:10px">
+            <button class="btn ghost" onclick="loadProveedores()">↻ Refrescar</button>
+            <button class="btn" onclick="exportProv()">Exportar Excel</button>
+          </div>
         </div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr><th>Nombre</th><th>CIF / NIF</th><th class="num">Documentos</th></tr></thead>
+            <thead><tr id="headProv"></tr></thead>
             <tbody id="provBody"></tbody>
           </table>
         </div>
@@ -327,6 +330,32 @@ const BUCKET="documentos";
 let tipo="auto";
 let cola=[];               // [{file, b64, mime, status}]
 let compras=[], reglas=[], albaranes=[], proveedores=[], productos=[];
+
+/* ---------- ordenación genérica de tablas ---------- */
+const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1}};
+function sortRows(rows,key,dir){
+  if(!key)return rows;
+  return [...rows].sort((a,b)=>{
+    let va=key(a),vb=key(b);
+    if(va==null)va='';if(vb==null)vb='';
+    const na=parseFloat(String(va).replace(',','.')), nb=parseFloat(String(vb).replace(',','.'));
+    const bothNum=!isNaN(na)&&!isNaN(nb)&&String(va).trim()!==''&&String(vb).trim()!=='';
+    if(bothNum){return (na-nb)*dir;}
+    return String(va).localeCompare(String(vb),'es',{numeric:true})*dir;
+  });
+}
+// genera el HTML de una cabecera ordenable
+function thh(tabla,colKey,label,extraClass){
+  const st=sortState[tabla];
+  const sorted=st.key===colKey;
+  const arrow=sorted?(st.dir===1?'▲':'▼'):'↕';
+  return `<th class="sortable ${sorted?'sorted':''} ${extraClass||''}" onclick="setSort('${tabla}','${colKey}')">${label}<span class="arr">${arrow}</span></th>`;
+}
+function setSort(tabla,colKey){
+  const st=sortState[tabla];
+  if(st.key===colKey)st.dir*=-1; else{st.key=colKey;st.dir=1;}
+  ({compras:renderTable,albaranes:renderAlb,proveedores:renderProv,productos:renderProd}[tabla])();
+}
 
 /* ---------- arranque ---------- */
 window.addEventListener('DOMContentLoaded',()=>{
@@ -545,10 +574,22 @@ function currentRows(){
     return true;});
 }
 function renderTable(){
-  const rows=currentRows(), tb=document.getElementById('tbody');
+  let rows=currentRows();
+  // ordenación
+  const st=sortState.compras;
+  const keymap={fecha:r=>(r.compras_doc||{}).fecha,prov:r=>(r.compras_doc||{}).proveedor,cod:r=>r.id_producto,
+    prod:r=>r.producto,nalb:r=>(r.compras_doc||{}).num_documento,cant:r=>r.cantidad,imp:r=>r.importe,canal:r=>r.canal,doc:r=>(r.compras_doc||{}).tipo};
+  if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  // cabecera
+  document.getElementById('headCompras').innerHTML=
+    thh('compras','fecha','Fecha')+thh('compras','prov','Proveedor')+thh('compras','cod','Cód.')+thh('compras','prod','Producto')+
+    thh('compras','nalb','Nº albarán')+thh('compras','cant','Cant.','num')+thh('compras','imp','Importe','num')+
+    thh('compras','canal','Centro')+thh('compras','doc','Doc')+'<th></th>';
+  const tb=document.getElementById('tbody');
   document.getElementById('emptyC').style.display=rows.length?'none':'block';
   tb.innerHTML=rows.map(r=>{const dc=r.compras_doc||{};return `<tr>
     <td>${dc.fecha||''}</td><td>${dc.proveedor||''}</td><td>${r.id_producto||''}</td><td>${r.producto||''}</td>
+    <td>${dc.num_documento||''}</td>
     <td class="num">${r.cantidad??''}</td><td class="num">${fmt(r.importe)}</td>
     <td><span class="editable" onblur="saveCanal('${r.id}',this.textContent)" contenteditable>${r.canal||'—'}</span></td>
     <td>${(dc.tipo||'').slice(0,3)} ${dc.estado==='REVISAR'?'<span class="pill rev">rev</span>':''}</td>
@@ -563,7 +604,7 @@ async function saveCanal(id,val){
 }
 function exportXlsx(){
   const rows=currentRows().map(r=>{const dc=r.compras_doc||{};return{
-    Fecha:dc.fecha||'',Proveedor:dc.proveedor||'','ID producto':r.id_producto||'',Producto:r.producto||'',
+    Fecha:dc.fecha||'',Proveedor:dc.proveedor||'','Nº albarán':dc.num_documento||'','ID producto':r.id_producto||'',Producto:r.producto||'',
     Cantidad:r.cantidad??'',Importe:r.importe??'',Canal:r.canal||''};});
   if(!rows.length){toast('No hay filas que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(rows),wb=XLSX.utils.book_new();
@@ -577,15 +618,34 @@ async function loadAlbaranes(){
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
 }
 function renderAlb(){
+  let rows=[...albaranes];
+  const st=sortState.albaranes;
+  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado};
+  if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  document.getElementById('headAlb').innerHTML=
+    thh('albaranes','fecha','Fecha')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
+    thh('albaranes','centro','Centro')+thh('albaranes','total','Total','num')+thh('albaranes','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('albBody');
   document.getElementById('albCount').textContent=albaranes.length;
   document.getElementById('emptyA').style.display=albaranes.length?'none':'block';
-  tb.innerHTML=albaranes.map(a=>`<tr>
+  tb.innerHTML=rows.map(a=>`<tr>
     <td>${a.fecha||''}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${a.canal||'—'}</td><td class="num">${fmt(a.total)}</td>
     <td>${a.estado==='REVISAR'?'<span class="pill rev">revisar</span>':'<span class="pill ok">ok</span>'}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
+}
+function exportAlb(){
+  let rows=[...albaranes];
+  const st=sortState.albaranes;
+  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado};
+  if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  const data=rows.map(a=>({Fecha:a.fecha||'',Proveedor:a.proveedor||'','Nº albarán':a.num_documento||'',
+    Centro:a.canal||'',Total:a.total??'',Estado:a.estado||''}));
+  if(!data.length){toast('No hay albaranes que exportar',true);return;}
+  const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Albaranes');
+  XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function revisar(docId){
   let a=albaranes.find(x=>x.id===docId);
@@ -605,6 +665,7 @@ async function revisar(docId){
     }else{
       ic.innerHTML=`<img id="zimg" src="${a.imagen_url}" alt="documento">
         <div class="zoomctl">
+          <button onclick="rotar()" title="Girar 90°">↻</button>
           <button onclick="zoomStep(-1)" title="Alejar">−</button>
           <button onclick="zoomStep(1)" title="Acercar">+</button>
           <button onclick="zoomReset()" title="Restablecer">⊙</button>
@@ -649,17 +710,18 @@ async function borrarDoc(docId,desc,imagen_url){
   }catch(err){toast('Error al borrar: '+err.message,true);}
 }
 
-/* ---------- zoom de la imagen ---------- */
-let zScale=1, zX=0, zY=0, zDrag=false, zSX=0, zSY=0, zPinch=0;
+/* ---------- zoom + rotación de la imagen ---------- */
+let zScale=1, zX=0, zY=0, zDrag=false, zSX=0, zSY=0, zPinch=0, zRot=0;
 function applyZoom(){
   const img=document.getElementById('zimg');if(!img)return;
-  img.style.transform=`translate(${zX}px,${zY}px) scale(${zScale})`;
+  img.style.transform=`translate(${zX}px,${zY}px) rotate(${zRot}deg) scale(${zScale})`;
   img.classList.toggle('zoomed',zScale>1);
 }
+function rotar(){zRot=(zRot+90)%360;applyZoom();}
 function zoomStep(dir){zScale=Math.min(6,Math.max(1,zScale+dir*0.4));if(zScale===1){zX=0;zY=0;}applyZoom();}
-function zoomReset(){zScale=1;zX=0;zY=0;applyZoom();}
+function zoomReset(){zScale=1;zX=0;zY=0;zRot=0;applyZoom();}
 function setupZoom(){
-  zScale=1;zX=0;zY=0;
+  zScale=1;zX=0;zY=0;zRot=0;
   const img=document.getElementById('zimg');if(!img)return;
   img.addEventListener('wheel',e=>{e.preventDefault();zoomStep(e.deltaY<0?1:-1);},{passive:false});
   img.addEventListener('dblclick',()=>{zScale>1?zoomReset():zoomStep(2);});
@@ -700,7 +762,14 @@ function currentProd(){
     return true;});
 }
 function renderProd(){
-  const rows=currentProd(), tb=document.getElementById('prodBody');
+  let rows=currentProd();
+  const st=sortState.productos;
+  const keymap={cod:p=>p.codigo_interno,prod:p=>p.nombre,ref:p=>p.ref_proveedor,prov:p=>p.proveedor_nombre,precio:p=>p.ultimo_precio};
+  if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  document.getElementById('headProd').innerHTML=
+    thh('productos','cod','Cód. interno')+thh('productos','prod','Producto')+thh('productos','ref','Ref. proveedor')+
+    thh('productos','prov','Proveedor')+thh('productos','precio','Últ. precio','num');
+  const tb=document.getElementById('prodBody');
   document.getElementById('prodCount').textContent=rows.length;
   document.getElementById('emptyProd').style.display=rows.length?'none':'block';
   tb.innerHTML=rows.map(p=>`<tr>
@@ -736,13 +805,30 @@ async function loadProveedores(){
   }catch(err){toast('No pude cargar proveedores: '+err.message,true);}
 }
 function renderProv(){
+  let rows=[...proveedores];
+  const st=sortState.proveedores;
+  const keymap={nombre:p=>p.nombre,nif:p=>p.nif,docs:p=>p._n};
+  if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  document.getElementById('headProv').innerHTML=
+    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+thh('proveedores','docs','Documentos','num');
   const tb=document.getElementById('provBody');
   document.getElementById('provCount').textContent=proveedores.length;
   document.getElementById('emptyP').style.display=proveedores.length?'none':'block';
-  tb.innerHTML=proveedores.map(p=>`<tr>
+  tb.innerHTML=rows.map(p=>`<tr>
     <td><span class="editable" onblur="saveProv('${p.id}','nombre',this.textContent)" contenteditable>${p.nombre||''}</span></td>
     <td><span class="editable" onblur="saveProv('${p.id}','nif',this.textContent)" contenteditable>${p.nif||'—'}</span></td>
     <td class="num">${p._n}</td></tr>`).join('');
+}
+function exportProv(){
+  let rows=[...proveedores];
+  const st=sortState.proveedores;
+  const keymap={nombre:p=>p.nombre,nif:p=>p.nif,docs:p=>p._n};
+  if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  const data=rows.map(p=>({Nombre:p.nombre||'','CIF / NIF':p.nif||'',Documentos:p._n??0}));
+  if(!data.length){toast('No hay proveedores que exportar',true);return;}
+  const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Proveedores');
+  XLSX.writeFile(wb,`proveedores_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function saveProv(id,campo,val){
   val=val.trim();if(val==='—')val='';
