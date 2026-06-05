@@ -323,7 +323,7 @@
           </table>
         </div>
         <div id="emptyP" class="empty" style="display:none">Aún no hay proveedores. Importa tu lista o procesa facturas.</div>
-        <p class="hint">Todos los campos son editables (clic en la celda). El casado de albaranes usa primero el CIF y, si falla, el nombre. "Importar lista" carga tus proveedores autorizados (no duplica los que ya estén).</p>
+        <p class="hint">Todos los campos son editables (clic en la celda). El casado usa primero el CIF, luego el nombre, luego los <b>alias</b>. Usa <b>Alias / logos</b> para nombres comerciales que aparecen sin CIF (ej: "CATCHOT" → Distribuciones Catchot SL): así el OCR los reconoce. Las <b>muestras</b> (📄 factura, 📦 albarán) te sirven de referencia para escribir buenas pautas. "Importar lista" carga tus proveedores autorizados (no duplica).</p>
       </div>
     </section>
 
@@ -411,6 +411,14 @@ function matchProveedor(nif,nombre){
   const nn=normNif(nif), na=normName(nombre);
   if(nn){const x=proveedores.find(p=>p.nif&&normNif(p.nif)===nn);if(x)return x;}
   if(na){const x=proveedores.find(p=>normName(p.nombre)===na);if(x)return x;}
+  // casar por alias / nombre comercial (ej: "CATCHOT" -> Distribuciones Catchot SL)
+  if(na){
+    const x=proveedores.find(p=>{
+      if(!p.alias)return false;
+      return p.alias.split(/[,;\n]/).map(a=>normName(a)).filter(Boolean).some(a=>a&&(na.includes(a)||a.includes(na)));
+    });
+    if(x)return x;
+  }
   return null;
 }
 
@@ -583,6 +591,10 @@ async function procesarUno(c){
   const pautaFacTxt=conPautaFac.length
     ? conPautaFac.map(p=>`- ${p.nombre}${p.nif?' (CIF '+p.nif+')':''}: ${p.pauta_factura}`).join('\n')
     : '(sin pautas de factura específicas)';
+  const conAlias=proveedores.filter(p=>p.alias&&p.alias.trim());
+  const aliasTxt=conAlias.length
+    ? conAlias.map(p=>`- Si ves "${p.alias}" (logo o nombre comercial) → es ${p.nombre}${p.nif?', CIF '+p.nif:''}.`).join('\n')
+    : '(sin alias registrados)';
   const comun=`Eres un OCR contable para un grupo de hostelería. Extrae los datos del documento adjunto.
 
 CENTROS DE COSTE válidos (canal): ${CENTROS.join(', ')}.
@@ -593,8 +605,11 @@ ${reglasTxt}
 PAUTAS POR PROVEEDOR (aplica la del proveedor que detectes en este documento, si coincide):
 ${pautasTxt}
 
+EQUIVALENCIAS DE PROVEEDOR (algunos documentos llegan solo con logo o nombre comercial, sin CIF ni nombre fiscal; usa esta tabla para identificar al proveedor y rellenar su nombre fiscal y CIF correctos):
+${aliasTxt}
+
 Asigna "canal" SOLO si una regla o el propio documento lo permite con seguridad. Si no estás seguro, deja canal:null.
-El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet).
+El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet). Si el documento no muestra el CIF pero reconoces el proveedor por la tabla de equivalencias, usa el CIF de esa tabla.
 "base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).`;
 
   let prompt;
@@ -1243,7 +1258,7 @@ function exportProd(){
 /* ---------- proveedores ---------- */
 async function loadProveedores(){
   try{
-    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,critico,pautas,pauta_factura,autorizado,muestra_url&order=nombre.asc');
+    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
     const docs=await sb('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
     proveedores.forEach(p=>p._n=cnt[p.id]||0);
@@ -1263,21 +1278,61 @@ function renderProv(){
     av.innerHTML=`⚠️ Hay ${nuevos.length} proveedor${nuevos.length>1?'es':''} nuevo${nuevos.length>1?'s':''} sin autorizar, detectado${nuevos.length>1?'s':''} al procesar documentos. Revísalos: corrige el nombre/CIF si hace falta y autorízalos.`;
   }else av.style.display='none';
   document.getElementById('headProv').innerHTML=
-    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+thh('proveedores','cat','Categoría')+
-    thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
+    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','cat','Categoría')+
+    thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th><th>Muestras</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
   const tb=document.getElementById('provBody');
   document.getElementById('provCount').textContent=proveedores.length;
   document.getElementById('emptyP').style.display=proveedores.length?'none':'block';
   tb.innerHTML=rows.map(p=>`<tr style="${p.autorizado===false?'background:#fdf4e8':''}">
     <td><span class="editable" onblur="saveProv('${p.id}','nombre',this.textContent)" contenteditable>${p.nombre||''}</span></td>
     <td><span class="editable" onblur="saveProv('${p.id}','nif',this.textContent)" contenteditable>${p.nif||'—'}</span></td>
+    <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','alias',this.textContent)" contenteditable>${p.alias||'—'}</span></td>
     <td><span class="editable" onblur="saveProv('${p.id}','categoria',this.textContent)" contenteditable>${p.categoria||'—'}</span></td>
     <td><span class="swi" onclick="toggleCritico('${p.id}')" title="Marcar crítico">${p.critico?'🔴':'⚪️'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pautas',this.textContent)" contenteditable>${p.pautas||'—'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pauta_factura',this.textContent)" contenteditable>${p.pauta_factura||'—'}</span></td>
+    <td>${celdaMuestras(p)}</td>
     <td class="num">${p._n}</td>
     <td>${p.autorizado===false?accionesNuevo(p):`<span class="pill ok">ok</span> <span class="link" style="font-size:12px" onclick="fusionUI('${p.id}')">fusionar</span>`}</td>
   </tr>`).join('');
+}
+// ---- documentos de muestra por proveedor (para entrenar el OCR) ----
+function celdaMuestras(p){
+  const fac=p.muestra_factura_url, alb=p.muestra_url;
+  const b=(tipo,url,icon,label)=>url
+    ? `<span class="link" style="font-size:11.5px;color:var(--ok)" onclick="verMuestra('${url}')" title="Ver ${label} de muestra">${icon} ✓</span> <span class="del" style="font-size:11px" onclick="quitarMuestra('${p.id}','${tipo}')" title="Quitar">✕</span>`
+    : `<span class="link" style="font-size:11.5px;color:var(--muted)" onclick="subirMuestra('${p.id}','${tipo}')" title="Subir ${label} de muestra">${icon} +</span>`;
+  return `<div style="display:flex;flex-direction:column;gap:3px;white-space:nowrap">
+    <span>📄 ${b('factura',fac,'fact.','factura')}</span>
+    <span>📦 ${b('albaran',alb,'alb.','albarán')}</span></div>`;
+}
+function verMuestra(url){window.open(url,'_blank');}
+function subirMuestra(provId,tipo){
+  const inp=document.createElement('input');
+  inp.type='file';inp.accept='image/*,application/pdf';
+  inp.onchange=async()=>{
+    const file=inp.files[0];if(!file)return;
+    toast('Subiendo muestra…');
+    try{
+      let f=file;
+      if(file.type.startsWith('image/')){try{f=await comprimirImagen(file);}catch(e){}}
+      const url=await sbUpload(f);
+      const campo=(tipo==='factura')?'muestra_factura_url':'muestra_url';
+      await sb(`compras_proveedor?id=eq.${provId}`,{method:'PATCH',body:JSON.stringify({[campo]:url})});
+      const p=proveedores.find(x=>x.id===provId);if(p)p[campo]=url;
+      renderProv();toast('Muestra guardada');
+    }catch(err){toast('Error al subir: '+err.message,true);}
+  };
+  inp.click();
+}
+async function quitarMuestra(provId,tipo){
+  if(!confirm('¿Quitar este documento de muestra?'))return;
+  const campo=(tipo==='factura')?'muestra_factura_url':'muestra_url';
+  try{
+    await sb(`compras_proveedor?id=eq.${provId}`,{method:'PATCH',body:JSON.stringify({[campo]:null})});
+    const p=proveedores.find(x=>x.id===provId);if(p)p[campo]=null;
+    renderProv();toast('Muestra quitada');
+  }catch(err){toast('Error: '+err.message,true);}
 }
 // fusión para proveedores ya autorizados (duplicados antiguos)
 function fusionUI(id){
