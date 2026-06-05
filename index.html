@@ -274,6 +274,7 @@
           <div class="total"><small>Albaranes registrados</small><span id="albCount">0</span></div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="detectarDuplicados('albaran')">🔍 Detectar duplicados</button>
+            <button class="btn ghost" onclick="recalcularEstados()">♻️ Recalcular estados</button>
             <button class="btn ghost" onclick="loadAlbaranes()">↻ Refrescar</button>
             <button class="btn" onclick="exportAlb()">Exportar Excel</button>
           </div>
@@ -770,14 +771,15 @@ ${formaAlbaran}`;
       // factura: no tiene detalle de productos. Cuadre básico: que tenga total.
       if(total==null)estadoDet='REVISAR';
     }else{
-      // albarán: suma de líneas (menos descuento) vs BASE imponible (tolerancia 15 céntimos)
-      const sumaLineas=(d.lineas||[]).reduce((s,l)=>s+(num(l.importe)||0),0);
-      const desc=num(d.descuento)||0;
-      const base=num(d.base);
-      if(base==null||!(d.lineas||[]).length){
-        estadoDet='REVISAR';  // falta base o no hay líneas
-      }else if(Math.abs((sumaLineas-desc)-base)>0.15){
-        estadoDet='NO_CUADRA';
+      // albarán: comparar suma de líneas (menos descuento) contra BASE o TOTAL (lo que haya),
+      // con el mismo margen laxo que el resto de la app. Sin líneas no hay detalle que auditar.
+      if(!(d.lineas||[]).length){
+        estadoDet='REVISAR';
+      }else{
+        const sumaLineas=(d.lineas||[]).reduce((s,l)=>s+(num(l.importe)||0),0);
+        const desc=num(d.descuento)||0;
+        const c=cuadreAlbaranes(sumaLineas-desc,num(d.base),total);
+        estadoDet=(c.ok===true)?'CORRECTO':(c.ok===false)?'NO_CUADRA':'REVISAR';
       }
     }
   }
@@ -959,6 +961,36 @@ async function detectarDuplicados(tipo){
     if(tipo==='albaran'){await loadAlbaranes();}else{await loadFacturas();}
     await loadCompras();
   }catch(err){toast('Error al detectar duplicados: '+err.message,true);}
+}
+// Recalcula el estado (correcto / no cuadra / revisar) de todos los albaranes
+// según su detalle actual, usando la regla de cuadre laxa (base O total).
+// No toca los marcados como DUPLICADO ni borra nada.
+async function recalcularEstados(){
+  if(!confirm('Voy a recalcular el estado (correcto / no cuadra / revisar) de todos los albaranes según su detalle actual.\n\nNo toca los marcados como DUPLICADO ni borra nada. Con muchos albaranes puede tardar un poco.\n\n¿Continuar?'))return;
+  toast('Recalculando estados…');
+  try{
+    const albs=await sb('compras_doc?tipo=eq.albaran&select=id,base,total,descuento,estado_detalle,canal&order=created_at.desc');
+    let cambiados=0;
+    for(const a of albs){
+      if(a.estado_detalle==='DUPLICADO')continue;
+      const ls=await sb(`compras_linea?doc_id=eq.${a.id}&select=importe`);
+      let nuevo;
+      if(!ls.length){
+        nuevo='REVISAR';
+      }else{
+        const suma=ls.reduce((s,l)=>s+(num(l.importe)||0),0)-(num(a.descuento)||0);
+        const c=cuadreAlbaranes(suma,a.base,a.total);
+        nuevo=(c.ok===true)?'CORRECTO':(c.ok===false)?'NO_CUADRA':'REVISAR';
+      }
+      if(nuevo!==a.estado_detalle){
+        const estadoSimple=(nuevo==='CORRECTO')?(a.canal?'OK':'REVISAR'):'REVISAR';
+        await sb(`compras_doc?id=eq.${a.id}`,{method:'PATCH',body:JSON.stringify({estado_detalle:nuevo,estado:estadoSimple})});
+        cambiados++;
+      }
+    }
+    toast(cambiados?`${cambiados} albarán(es) actualizados`:'Todo estaba ya al día');
+    await loadAlbaranes();await loadCompras();
+  }catch(err){toast('Error al recalcular: '+err.message,true);}
 }
 async function limpiarLineasFacturas(){
   if(!confirm('Las facturas no deben tener detalle de productos (ese detalle vive en los albaranes).\n\nEsto borra las líneas de producto de TODAS las facturas. No toca los albaranes ni los datos de cabecera de las facturas.\n\n¿Continuar?'))return;
