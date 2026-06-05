@@ -273,6 +273,7 @@
         <div class="barrow">
           <div class="total"><small>Albaranes registrados</small><span id="albCount">0</span></div>
           <div style="display:flex;gap:10px">
+            <button class="btn ghost" onclick="detectarDuplicados('albaran')">🔍 Detectar duplicados</button>
             <button class="btn ghost" onclick="loadAlbaranes()">↻ Refrescar</button>
             <button class="btn" onclick="exportAlb()">Exportar Excel</button>
           </div>
@@ -294,6 +295,7 @@
           <div class="total"><small>Facturas registradas</small><span id="facCount">0</span></div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="limpiarLineasFacturas()">🧹 Limpiar detalle viejo</button>
+            <button class="btn ghost" onclick="detectarDuplicados('factura')">🔍 Detectar duplicados</button>
             <button class="btn ghost" onclick="loadFacturas()">↻ Refrescar</button>
             <button class="btn" onclick="exportFac()">Exportar Excel</button>
           </div>
@@ -428,6 +430,15 @@ function setSort(tabla,colKey){
 /* ---------- normalización para casar proveedores ---------- */
 const PROV_SEED=[{"nif":"41502082P","nombre":"MENORCA VA DE VI","categoria":"SALA","critico":true,"pautas":"A veces dice cajas y botellas. Cargar botellas."},{"nif":"41509848T","nombre":"BOLETS DE MENORCA","categoria":"COCINA","critico":false,"pautas":""},{"nif":"41739670Y","nombre":"MARC CASASNOVAS BENEJAM","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A07027261","nombre":"QUELY SA","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A07051212","nombre":"MIGUEL PONS JUSTO, S.A.","categoria":"SALA","critico":true,"pautas":"A veces dice cajas y botellas. Cargar botellas."},{"nif":"A07111156","nombre":"MENORCA FRUIT","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A23015290","nombre":"Patrick de la CHESNAIS","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A25041146","nombre":"LACREM, S.A.U.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"A58592627","nombre":"AGUSTÍN TORRELLA, S.A.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B07020134","nombre":"HIJOS DE RAMÓN OLIVER, SL","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B07069594","nombre":"Distribuciones Goñalons, S.L.","categoria":"SALA","critico":true,"pautas":""},{"nif":"B07265242","nombre":"PEIXOS EMILIO, S.L.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B07458441","nombre":"COMERCIAL CATCHOT S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B07458995","nombre":"ILLA FRUITS S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B07568488","nombre":"BIONA S.L","categoria":"SALA","critico":true,"pautas":""},{"nif":"B07596174","nombre":"DALRIT, S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B07710965","nombre":"CÁRNICAS VIPER S.L.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B07750409","nombre":"J. J. CARRERAS ALIMENTACIÓN","categoria":"COCINA","critico":true,"pautas":"El solomillo, el entrecotte, la lubina… a veces dice cuántas unidades y cuántos kg… poner solo los kg."},{"nif":"B07773450","nombre":"GRANJA AVICOLA CONSELL, S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B16505497","nombre":"SASTRE CONGELATS 2017, S.L","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B16617870","nombre":"DUCHISELA INDUSTRIA CARNICA, SL","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B25028515","nombre":"JOVÉ VIÑES, S.L.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B26551412","nombre":"Coca-Cola Europacific Partner Iberia, S.L","categoria":"SALA","critico":true,"pautas":""},{"nif":"B42120488","nombre":"PAIN PIGALLE SL","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57075665","nombre":"DE VINS MENORCA, S. L.","categoria":"SALA","critico":true,"pautas":""},{"nif":"B57125221","nombre":"EXCLUSIVAS CATCH S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57162000","nombre":"ES REBOST DE BONATECA S.L.","categoria":"SALA","critico":true,"pautas":"A veces dice cajas y botellas. Cargar botellas."},{"nif":"B57261695","nombre":"Gelmarfred s.l.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57499766","nombre":"Patrick de la CHESNAIS Explotación Agrícola ES BARRACONS","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57694937","nombre":"EMBOTITS RAIMA, S.L.","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B57738270","nombre":"SAVIA RITA, SL.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B57806499","nombre":"SOCIETAT D'ARMADORS I MARISCADORS DEL PORT DE MAO SL","categoria":"COCINA","critico":true,"pautas":""},{"nif":"B57842650","nombre":"Dismenorca, S.L.","categoria":"SALA","critico":true,"pautas":""},{"nif":"B57893711","nombre":"COR GELAT, S.L.U.","categoria":"COCINA Y SALA","critico":false,"pautas":""},{"nif":"B57929200","nombre":"AMAPOLA OBRADOR DE PAN","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B65855314","nombre":"Saboor Fine Products S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B66131749","nombre":"SASTRE LOGISTICA 2014, S.L.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"B72533094","nombre":"MAS QUE CAFE MENORCA S.L.U","categoria":"COCINA Y SALA","critico":true,"pautas":""},{"nif":"CIF123456","nombre":"ITA SOBRASADA","categoria":"COCINA","critico":false,"pautas":""},{"nif":"E07712946","nombre":"BINISERRAIA S.R.M.","categoria":"COCINA","critico":false,"pautas":""},{"nif":"E75993071","nombre":"LA MIRIENDA OBRADOR CAFÉ","categoria":"COCINA","critico":false,"pautas":""},{"nif":"J57597627","nombre":"CA NAUXILI, S.L","categoria":"COCINA","critico":false,"pautas":""},{"nif":"J57780264","nombre":"Santo Domingo SC - Productes Ecològics Santo Domingo","categoria":"COCINA","critico":false,"pautas":""},{"nif":"J57846586","nombre":"MORVEDRA VELL SRM","categoria":"COCINA","critico":false,"pautas":""}];
 function normNif(s){return s?String(s).toUpperCase().replace(/[^A-Z0-9]/g,''):'';}
+// huella de duplicado: nº documento (solo letras/números) + fecha (YYYY-MM-DD) + importe (2 decimales).
+// Devuelve null si falta el nº o el importe (sin ellos no podemos afirmar que sea duplicado).
+function firmaDup(numDoc,fecha,total){
+  const n=String(numDoc||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const t=(total!=null&&!isNaN(num(total)))?num(total).toFixed(2):'';
+  const f=(fecha||'').slice(0,10);
+  if(!n||!t)return null;
+  return n+'|'+f+'|'+t;
+}
 function normName(s){
   if(!s)return '';
   s=String(s).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
@@ -726,13 +737,13 @@ ${formaAlbaran}`;
 
   // 3) AUDITORÍA del documento
   const total=num(d.total);
-  // hash para detectar duplicados: proveedor(norm) + nº doc(norm) + total
-  const hashDoc=[normNif(d.proveedor_nif)||normName(d.proveedor),
-    String(d.num_documento||'').toUpperCase().replace(/[^A-Z0-9]/g,''),
-    total!=null?total.toFixed(2):''].join('|');
+  // huella de duplicado: nº documento (normalizado) + fecha + importe.
+  // NO usamos el proveedor: el OCR lo escribe distinto cada vez y rompía la detección.
+  // El nº de albarán/factura ya es único de cada proveedor.
+  const hashDoc=firmaDup(d.num_documento,d.fecha,total);
   let estadoDet='CORRECTO', dupAviso=false;
-  // ¿duplicado? buscar mismo hash en lo ya guardado
-  if(d.num_documento && total!=null){
+  // ¿duplicado? buscar misma huella en lo ya guardado
+  if(hashDoc){
     const dup=await sb(`compras_doc?hash_doc=eq.${encodeURIComponent(hashDoc)}&select=id&limit=1`);
     if(dup.length){estadoDet='DUPLICADO';dupAviso=true;}
   }
@@ -903,6 +914,51 @@ function exportAlb(){
 async function loadFacturas(){
   try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url&order=created_at.desc");renderFac();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
+}
+// Repasa TODOS los documentos del tipo y marca como DUPLICADO los que repiten
+// la huella (nº + fecha + importe). Se queda el primero de cada grupo; el resto
+// se marcan (no se borran). También corrige el campo hash_doc para futuras detecciones.
+async function detectarDuplicados(tipo){
+  const etq=(tipo==='albaran')?'albaranes':'facturas';
+  if(!confirm(`Voy a revisar todos los ${etq} y marcar como DUPLICADO los que repitan nº + fecha + importe.\n\nSe queda el primero de cada grupo; los repetidos se marcan (NO se borran).\n\n¿Continuar?`))return;
+  toast('Buscando duplicados…');
+  try{
+    const docs=await sb(`compras_doc?tipo=eq.${tipo}&select=id,num_documento,fecha,total,estado,estado_detalle,canal,hash_doc,created_at&order=created_at.asc`);
+    const grupos={};
+    docs.forEach(d=>{
+      const f=firmaDup(d.num_documento,d.fecha,d.total);
+      if(!f)return;
+      (grupos[f]=grupos[f]||[]).push(d);
+    });
+    let nDup=0,nGrupos=0,patches=0;
+    for(const f in grupos){
+      const g=grupos[f];
+      // actualizar hash_doc de todos (para que la detección al subir funcione luego)
+      // y marcar duplicados si el grupo tiene 2+
+      for(let i=0;i<g.length;i++){
+        const d=g[i];
+        const cambios={};
+        if(d.hash_doc!==f)cambios.hash_doc=f;
+        if(g.length>=2){
+          if(i===0){
+            // el primero se queda; si estaba mal marcado como DUPLICADO, lo soltamos
+            if(d.estado_detalle==='DUPLICADO'){cambios.estado_detalle='REVISAR';cambios.estado='REVISAR';}
+          }else{
+            if(d.estado_detalle!=='DUPLICADO'){cambios.estado_detalle='DUPLICADO';cambios.estado='REVISAR';}
+            nDup++;
+          }
+        }
+        if(Object.keys(cambios).length){
+          await sb(`compras_doc?id=eq.${d.id}`,{method:'PATCH',body:JSON.stringify(cambios)});
+          patches++;
+        }
+      }
+      if(g.length>=2)nGrupos++;
+    }
+    toast(nDup?`${nDup} duplicado(s) marcados en ${nGrupos} grupo(s)`:'No se encontraron duplicados');
+    if(tipo==='albaran'){await loadAlbaranes();}else{await loadFacturas();}
+    await loadCompras();
+  }catch(err){toast('Error al detectar duplicados: '+err.message,true);}
 }
 async function limpiarLineasFacturas(){
   if(!confirm('Las facturas no deben tener detalle de productos (ese detalle vive en los albaranes).\n\nEsto borra las líneas de producto de TODAS las facturas. No toca los albaranes ni los datos de cabecera de las facturas.\n\n¿Continuar?'))return;
