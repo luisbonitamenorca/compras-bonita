@@ -1366,15 +1366,46 @@ async function quitarMuestra(provId,tipo){
 // fusión para proveedores ya autorizados (duplicados antiguos)
 function fusionUI(id){
   const p=proveedores.find(x=>x.id===id);if(!p)return;
-  const opciones=proveedores.filter(x=>x.id!==id).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''))
-    .map(x=>`${x.nombre}${x.nif?' ('+x.nif+')':''}`);
-  const lista=opciones.map((o,i)=>`${i+1}. ${o}`).join('\n');
-  const ids=proveedores.filter(x=>x.id!==id).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||'')).map(x=>x.id);
-  const sel=prompt(`Fusionar «${p.nombre}» dentro de otro proveedor.\n\nEscribe el número del proveedor DESTINO (el que se queda):\n\n${lista}`);
-  if(!sel)return;
-  const idx=parseInt(sel,10)-1;
-  if(isNaN(idx)||idx<0||idx>=ids.length){toast('Número no válido',true);return;}
-  fusionarPar(id,ids[idx]);
+  const opciones=proveedores.filter(x=>x.id!==id)
+    .sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||''));
+  const esc=s=>(s||'').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const pintaOps=arr=>arr.map(x=>`<option value="${x.id}">${esc(x.nombre)}${x.nif?'  ·  '+esc(x.nif):''}</option>`).join('');
+  const ov=document.createElement('div');
+  ov.className='modal show';ov.style.zIndex='80';
+  ov.innerHTML=`<div class="box" style="max-width:540px">
+    <div class="head"><h3>Fusionar proveedor</h3><button class="close" type="button">×</button></div>
+    <div style="padding:18px 22px;display:flex;flex-direction:column;gap:13px">
+      <div style="font-size:13.5px;color:var(--muted);line-height:1.5">
+        Fusionar «<b style="color:var(--ink)">${esc(p.nombre)}</b>»${p.nif?' ('+esc(p.nif)+')':''} dentro de otro proveedor.
+        El <b>destino</b> es el que se queda; este se borrará y sus documentos y productos pasarán al destino. No se puede deshacer.
+      </div>
+      <input type="text" id="fusFiltro" placeholder="🔎 Filtrar por nombre o CIF…" autocomplete="off">
+      <select id="fusSelect" size="10" style="width:100%;font-size:13px">${pintaOps(opciones)}</select>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px">
+        <button class="btn ghost" type="button" id="fusCancel">Cancelar</button>
+        <button class="btn" type="button" id="fusGo">Fusionar →</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(ov);
+  const cerrar=()=>ov.remove();
+  const filtro=ov.querySelector('#fusFiltro'), selEl=ov.querySelector('#fusSelect');
+  ov.querySelector('.close').onclick=cerrar;
+  ov.querySelector('#fusCancel').onclick=cerrar;
+  ov.onclick=e=>{if(e.target===ov)cerrar();};
+  filtro.oninput=()=>{
+    const q=normName(filtro.value);
+    const arr=q?opciones.filter(x=>normName(x.nombre).includes(q)||normName(x.nif).includes(q)):opciones;
+    selEl.innerHTML=pintaOps(arr);
+    if(arr.length===1)selEl.value=arr[0].id;
+  };
+  selEl.ondblclick=()=>ov.querySelector('#fusGo').click();
+  ov.querySelector('#fusGo').onclick=()=>{
+    const destino=selEl.value;
+    if(!destino){toast('Elige un proveedor destino',true);return;}
+    cerrar();
+    fusionarPar(id,destino);
+  };
+  setTimeout(()=>filtro.focus(),50);
 }
 // motor de fusión seguro: mueve docs y productos, resolviendo choques de referencia
 async function ejecutarFusion(idOrigen,idDestino,nombreDestino){
