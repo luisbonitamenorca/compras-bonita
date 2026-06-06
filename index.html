@@ -251,7 +251,10 @@
           <div><label class="fld">Proveedor</label><input id="fProv" type="text" placeholder="filtrar…" oninput="renderTable()"></div>
         </div>
         <div class="barrow">
-          <div class="total"><small>Importe filtrado</small><span id="tTotal">0,00 €</span></div>
+          <div style="display:flex;gap:24px;flex-wrap:wrap">
+            <div class="total"><small>Albaranes</small><span id="cCount">0</span></div>
+            <div class="total"><small>Importe filtrado (sin IVA)</small><span id="tTotal">0,00 €</span></div>
+          </div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="loadCompras()">↻ Refrescar</button>
             <button class="btn" onclick="exportXlsx()">Exportar Excel</button>
@@ -271,7 +274,10 @@
     <section id="v-albaranes" class="view">
       <div class="panel">
         <div class="barrow">
-          <div class="total"><small>Albaranes registrados</small><span id="albCount">0</span></div>
+          <div style="display:flex;gap:24px;flex-wrap:wrap">
+            <div class="total"><small>Albaranes registrados</small><span id="albCount">0</span></div>
+            <div class="total"><small>Importe (sin IVA)</small><span id="albTotal">0,00 €</span></div>
+          </div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="detectarDuplicados('albaran')">🔍 Detectar duplicados</button>
             <button class="btn ghost" onclick="recalcularEstados()">♻️ Recalcular estados</button>
@@ -293,7 +299,10 @@
     <section id="v-facturas" class="view">
       <div class="panel">
         <div class="barrow">
-          <div class="total"><small>Facturas registradas</small><span id="facCount">0</span></div>
+          <div style="display:flex;gap:24px;flex-wrap:wrap">
+            <div class="total"><small>Facturas registradas</small><span id="facCount">0</span></div>
+            <div class="total"><small>Importe (sin IVA)</small><span id="facTotal">0,00 €</span></div>
+          </div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="limpiarLineasFacturas()">🧹 Limpiar detalle viejo</button>
             <button class="btn ghost" onclick="detectarDuplicados('factura')">🔍 Detectar duplicados</button>
@@ -868,6 +877,7 @@ function renderTable(){
     <td>${estBadge(dc.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${r.doc_id}')">abrir</span></td></tr>`;}).join('');
   document.getElementById('tTotal').textContent=fmt(rows.reduce((s,r)=>s+(r.importe||0),0));
+  document.getElementById('cCount').textContent=new Set(rows.map(r=>r.doc_id)).size;
 }
 async function saveCanal(id,val){
   val=val.trim().toUpperCase();if(val==='—'||val==='')return;
@@ -887,7 +897,7 @@ function exportXlsx(){
 
 /* ---------- albaranes ---------- */
 async function loadAlbaranes(){
-  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderAlb();}
+  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,num_documento,canal,base,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderAlb();}
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
 }
 function renderAlb(){
@@ -900,6 +910,7 @@ function renderAlb(){
     thh('albaranes','centro','Centro')+thh('albaranes','total','Total','num')+thh('albaranes','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('albBody');
   document.getElementById('albCount').textContent=albaranes.length;
+  document.getElementById('albTotal').textContent=fmt(albaranes.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyA').style.display=albaranes.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
     <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
@@ -914,14 +925,14 @@ function exportAlb(){
   const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº albarán':a.num_documento||'',
-    Centro:a.canal||'',Total:a.total??'',Estado:a.estado_detalle||'REVISAR'}));
+    Centro:a.canal||'',Base:a.base??'',Estado:a.estado_detalle||'REVISAR'}));
   if(!data.length){toast('No hay albaranes que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Albaranes');
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function loadFacturas(){
-  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderFac();}
+  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,num_documento,canal,base,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderFac();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
 }
 // Repasa TODOS los documentos del tipo y marca como DUPLICADO los que repiten
@@ -1026,6 +1037,7 @@ function renderFac(){
     thh('facturas','centro','Centro')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('facBody');
   document.getElementById('facCount').textContent=facturas.length;
+  document.getElementById('facTotal').textContent=fmt(facturas.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyF').style.display=facturas.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
     <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
