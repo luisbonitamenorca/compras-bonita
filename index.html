@@ -229,6 +229,7 @@
       <button data-v="resumen" onclick="tab('resumen')">Resumen</button>
       <button data-v="albaranes" onclick="tab('albaranes')">Albaranes</button>
       <button data-v="facturas" onclick="tab('facturas')">Facturas</button>
+      <button data-v="conciliacion" onclick="tab('conciliacion')">Conciliación</button>
       <button data-v="productos" onclick="tab('productos')">Productos</button>
       <button data-v="proveedores" onclick="tab('proveedores')">Proveedores</button>
       <button data-v="reglas" onclick="tab('reglas')">Reglas</button>
@@ -356,6 +357,33 @@
       </div>
     </section>
 
+    <!-- CONCILIACION -->
+    <section id="v-conciliacion" class="view">
+      <div class="panel">
+        <div class="filters">
+          <div><label class="fld">Proveedor</label><input id="concilProv" type="text" placeholder="filtrar…" oninput="renderConciliacion()"></div>
+          <div><label class="fld">Mostrar</label><select id="concilEstado" onchange="renderConciliacion()">
+            <option value="">Todos</option>
+            <option value="falta">Solo los que faltan</option>
+            <option value="ok">Solo los que tenemos</option>
+          </select></div>
+          <div style="flex:1 1 auto;text-align:right;align-self:flex-end;display:flex;gap:10px;justify-content:flex-end">
+            <button class="btn ghost" onclick="loadFacturas();loadAlbaranes()">↻ Refrescar</button>
+            <button class="btn" onclick="exportConcil()">Exportar Excel</button>
+          </div>
+        </div>
+        <div id="concilKpis" class="kpis"></div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr id="headConcil"></tr></thead>
+            <tbody id="concilBody"></tbody>
+          </table>
+        </div>
+        <div id="emptyCon" class="empty" style="display:none">No hay albaranes detectados en las facturas todavía. Sube alguna factura con su lista de albaranes.</div>
+        <p class="hint">Cada fila es un albarán que aparece dentro de una factura. «Falta» significa que ese albarán no está en tu listado de Albaranes: probablemente quede por entrar. El objetivo no es cuadrar el céntimo, sino que no se escape ningún albarán del coste analítico.</p>
+      </div>
+    </section>
+
     <!-- PRODUCTOS -->
     <section id="v-productos" class="view">
       <div class="panel">
@@ -449,7 +477,7 @@ let compras=[], reglas=[], albaranes=[], proveedores=[], productos=[], facturas=
 let revisarDoc=null, revisarLineas=[], revisarAlbaranes=[];   // documento abierto en el modal de revisión
 
 /* ---------- ordenación genérica de tablas ---------- */
-const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},facturas:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1}};
+const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},facturas:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1},conciliacion:{key:null,dir:1}};
 function sortRows(rows,key,dir){
   if(!key)return rows;
   return [...rows].sort((a,b)=>{
@@ -471,7 +499,7 @@ function thh(tabla,colKey,label,extraClass){
 function setSort(tabla,colKey){
   const st=sortState[tabla];
   if(st.key===colKey)st.dir*=-1; else{st.key=colKey;st.dir=1;}
-  ({compras:renderTable,albaranes:renderAlb,facturas:renderFac,proveedores:renderProv,productos:renderProd}[tabla])();
+  ({compras:renderTable,albaranes:renderAlb,facturas:renderFac,proveedores:renderProv,productos:renderProd,conciliacion:renderConciliacion}[tabla])();
 }
 
 /* ---------- normalización para casar proveedores ---------- */
@@ -934,7 +962,7 @@ function exportXlsx(){
 
 /* ---------- albaranes ---------- */
 async function loadAlbaranes(){
-  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,num_documento,canal,base,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderAlb();}
+  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderAlb();renderConciliacion();}
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
 }
 function renderAlb(){
@@ -969,7 +997,7 @@ function exportAlb(){
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function loadFacturas(){
-  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,num_documento,canal,base,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderFac();}
+  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,total,estado,estado_detalle,imagen_url,albaranes_detectados,created_at&order=created_at.desc");renderFac();renderConciliacion();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
 }
 // Repasa TODOS los documentos del tipo y marca como DUPLICADO los que repiten
@@ -1690,6 +1718,89 @@ function nuevoProveedor(){
   setTimeout(()=>ov.querySelector('#npNombre').focus(),50);
 }
 
+/* ---------- conciliación: ¿qué albaranes de las facturas tenemos registrados? ---------- */
+let conciliacionRows=[];
+// normaliza un nº de albarán (mayúsculas, solo alfanumérico)
+function normAlb(x){return x?String(x).toUpperCase().replace(/[^A-Z0-9]/g,''):'';}
+// núcleo numérico: el grupo de dígitos más largo sin ceros a la izquierda
+// (absorbe prefijos de serie: "1/16127" y "16127" casan)
+function nucleoNum(x){const m=String(x||'').match(/\d+/g);if(!m)return '';return m.slice().sort((a,b)=>b.length-a.length)[0].replace(/^0+/,'')||'';}
+function renderConciliacion(){
+  if(!document.getElementById('concilBody'))return;
+  // índice de los albaranes que SÍ tenemos, indexado por proveedor (id y nombre) + número
+  const idx=new Map();
+  const ensure=k=>{if(!idx.has(k))idx.set(k,{exact:new Map(),nucleo:new Map()});return idx.get(k);};
+  albaranes.forEach(a=>{
+    const ne=normAlb(a.num_documento),nu=nucleoNum(a.num_documento);
+    const keys=[];
+    if(a.proveedor_id)keys.push(a.proveedor_id);
+    if(a.proveedor)keys.push('n:'+normName(a.proveedor));
+    keys.forEach(k=>{const e=ensure(k);if(ne&&!e.exact.has(ne))e.exact.set(ne,a.id);if(nu&&!e.nucleo.has(nu))e.nucleo.set(nu,a.id);});
+  });
+  const buscar=(f,al)=>{
+    const ne=normAlb(al.num_albaran),nu=nucleoNum(al.num_albaran);
+    const keys=[];if(f.proveedor_id)keys.push(f.proveedor_id);if(f.proveedor)keys.push('n:'+normName(f.proveedor));
+    for(const k of keys){const e=idx.get(k);if(!e)continue;
+      if(ne&&e.exact.has(ne))return e.exact.get(ne);
+      if(nu&&e.nucleo.has(nu))return e.nucleo.get(nu);}
+    return null;
+  };
+  // una fila por cada albarán que aparece en una factura
+  let rows=[],sinDet=0;
+  facturas.forEach(f=>{
+    const arr=Array.isArray(f.albaranes_detectados)?f.albaranes_detectados:[];
+    if(!arr.length){sinDet++;return;}
+    arr.forEach(al=>{
+      const numAlb=(al.num_albaran||'').toString().trim();
+      if(!numAlb)return;
+      const albId=buscar(f,al);
+      rows.push({proveedor:f.proveedor||'',fecha:al.fecha||f.fecha||'',num_albaran:numAlb,
+        factura:f.num_documento||'',importe:al.importe,facturaId:f.id,tiene:!!albId,albId});
+    });
+  });
+  conciliacionRows=rows;
+  // KPIs
+  const total=rows.length,ok=rows.filter(r=>r.tiene).length,falta=total-ok;
+  document.getElementById('concilKpis').innerHTML=[
+    ['Albaranes en facturas',total],['Los tenemos',ok],
+    ['Faltan',`<span style="color:var(--warn)">${falta}</span>`],['Facturas sin albaranes leídos',sinDet]
+  ].map(([l,v])=>`<div class="kpi"><small>${l}</small><b>${v}</b></div>`).join('');
+  // filtros
+  const fp=(document.getElementById('concilProv').value||'').toLowerCase();
+  const fe=document.getElementById('concilEstado').value;
+  let vis=rows.filter(r=>{
+    if(fp&&!r.proveedor.toLowerCase().includes(fp))return false;
+    if(fe==='falta'&&r.tiene)return false;
+    if(fe==='ok'&&!r.tiene)return false;
+    return true;
+  });
+  // orden
+  const st=sortState.conciliacion;
+  const keymap={prov:r=>r.proveedor,fecha:r=>r.fecha,nalb:r=>r.num_albaran,fact:r=>r.factura,imp:r=>num(r.importe),estado:r=>r.tiene?1:0};
+  if(st.key&&keymap[st.key])vis=sortRows(vis,keymap[st.key],st.dir);
+  document.getElementById('headConcil').innerHTML=
+    thh('conciliacion','prov','Proveedor')+thh('conciliacion','fecha','Fecha')+thh('conciliacion','nalb','Nº albarán')+
+    thh('conciliacion','fact','Factura')+thh('conciliacion','imp','Importe','num')+thh('conciliacion','estado','¿Lo tenemos?');
+  document.getElementById('emptyCon').style.display=vis.length?'none':'block';
+  document.getElementById('concilBody').innerHTML=vis.map(r=>`<tr>
+    <td>${r.proveedor}</td><td>${r.fecha||''}</td><td>${r.num_albaran}</td>
+    <td><span class="link" onclick="revisar('${r.facturaId}')">${r.factura||'(ver factura)'}</span></td>
+    <td class="num">${r.importe!=null?fmt(r.importe):''}</td>
+    <td>${r.tiene
+      ?`<span class="est correcto" title="Abrir el albarán" style="cursor:pointer" onclick="revisar('${r.albId}')">✓ Sí</span>`
+      :'<span class="est nocuadra">⚠️ Falta</span>'}</td>
+  </tr>`).join('');
+}
+function exportConcil(){
+  const rows=conciliacionRows||[];
+  if(!rows.length){toast('No hay nada que exportar',true);return;}
+  const data=rows.map(r=>({Proveedor:r.proveedor,Fecha:r.fecha||'','Nº albarán':r.num_albaran,
+    Factura:r.factura,Importe:r.importe??'','¿Lo tenemos?':r.tiene?'SÍ':'FALTA'}));
+  const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Conciliación');
+  XLSX.writeFile(wb,`conciliacion_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 async function loadProveedores(){
   try{
     proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,cuenta_contable,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
@@ -1988,7 +2099,8 @@ async function delRule(id){try{await sb(`compras_regla?id=eq.${id}`,{method:'DEL
 /* ---------- ui helpers ---------- */
 function tab(v){[...document.querySelectorAll('nav.tabs button')].forEach(b=>b.classList.toggle('active',b.dataset.v===v));
   [...document.querySelectorAll('.view')].forEach(s=>s.classList.toggle('active',s.id==='v-'+v));
-  if(v==='resumen')renderDashboard();}
+  if(v==='resumen')renderDashboard();
+  if(v==='conciliacion')renderConciliacion();}
 function fmt(n){if(n==null||n==='')return '';return Number(n).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';}
 function fmtCarga(ts){if(!ts)return '';const d=new Date(ts);if(isNaN(d))return '';const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} <span style="color:var(--muted);font-size:11px">${p(d.getHours())}:${p(d.getMinutes())}</span>`;}
 function estBadge(ed){
