@@ -194,6 +194,20 @@
   .cfgwrap .panel{padding:30px}
   .cfgwrap h2{font-family:inherit;font-weight:600;font-size:20px;margin-bottom:6px}
   .cfgwrap p{color:var(--muted);font-size:14px;margin-bottom:20px}
+  /* --- dashboard resumen --- */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+  .kpi{background:var(--bg);border:0.5px solid var(--line);border-radius:var(--radius-lg);padding:14px 16px}
+  .kpi small{display:block;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px}
+  .kpi b{font-size:21px;font-weight:600;color:var(--ink)}
+  .dashgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+  .dashcard{background:var(--bg);border:0.5px solid var(--line);border-radius:var(--radius-lg);padding:16px 18px}
+  .dashcard h4{margin:0 0 14px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600}
+  .brow{margin-bottom:10px}
+  .brow .blab{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;margin-bottom:4px;color:var(--ink)}
+  .brow .blab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .brow .blab b{font-weight:600;white-space:nowrap}
+  .btrack{background:var(--line);border-radius:6px;height:8px;overflow:hidden}
+  .bfill{background:var(--wine);height:100%;border-radius:6px;min-width:2px}
 </style>
 </head>
 <body>
@@ -210,6 +224,7 @@
     <nav class="tabs">
       <button data-v="subir" class="active" onclick="tab('subir')">Subir</button>
       <button data-v="compras" onclick="tab('compras')">Compras</button>
+      <button data-v="resumen" onclick="tab('resumen')">Resumen</button>
       <button data-v="albaranes" onclick="tab('albaranes')">Albaranes</button>
       <button data-v="facturas" onclick="tab('facturas')">Facturas</button>
       <button data-v="productos" onclick="tab('productos')">Productos</button>
@@ -267,6 +282,25 @@
           </table>
         </div>
         <div id="emptyC" class="empty" style="display:none">Aún no hay compras. Sube tu primera factura.</div>
+      </div>
+    </section>
+
+    <!-- RESUMEN -->
+    <section id="v-resumen" class="view">
+      <div class="panel">
+        <div class="filters">
+          <div><label class="fld">Centro</label><select id="dashCentro" onchange="renderDashboard()"></select></div>
+          <div><label class="fld">Año</label><select id="dashAnio" onchange="renderDashboard()"></select></div>
+          <div style="flex:1 1 auto;text-align:right;align-self:flex-end"><button class="btn ghost" onclick="loadCompras()">↻ Refrescar</button></div>
+        </div>
+        <div id="dashKpis" class="kpis"></div>
+        <div class="dashgrid">
+          <div class="dashcard"><h4>Por centro</h4><div id="dashPorCentro"></div></div>
+          <div class="dashcard"><h4>Por mes</h4><div id="dashPorMes"></div></div>
+          <div class="dashcard"><h4>Top proveedores</h4><div id="dashTopProv"></div></div>
+          <div class="dashcard"><h4>Artículos más comprados</h4><div id="dashTopArt"></div></div>
+        </div>
+        <p class="hint">Importes sin IVA, calculados sobre los albaranes (los duplicados no cuentan).</p>
       </div>
     </section>
 
@@ -844,7 +878,7 @@ function num(x){if(x==null||x==='')return null;const n=parseFloat(String(x).repl
 
 /* ---------- compras ---------- */
 async function loadCompras(){
-  try{compras=await sb('compras_linea?select=id,doc_id,id_producto,producto,cantidad,importe,canal,compras_doc(fecha,proveedor,tipo,num_documento,estado,estado_detalle)&order=created_at.desc');renderTable();}
+  try{compras=await sb('compras_linea?select=id,doc_id,id_producto,producto,cantidad,importe,canal,compras_doc(fecha,proveedor,tipo,num_documento,estado,estado_detalle)&order=created_at.desc');renderTable();renderDashboard();}
   catch(err){toast('No pude cargar compras: '+err.message,true);}
 }
 function currentRows(){
@@ -1110,7 +1144,7 @@ function renderDetalle(){
     const ed='contenteditable class="ce"';
     dc.innerHTML=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
         ${estBadge(a.estado_detalle)}
-        <span class="pill ${a.canal?'ok':'rev'}">${a.canal||'sin centro'}</span>
+        ${selectCentroModal(a.canal)}
         <span class="hint" style="margin:0">${a.fecha||''} · total ${fmt(a.total)}</span></div>
       <div style="font-size:13px;margin-bottom:12px">Base imponible: <b>${fmt(a.base)}</b></div>
       <div style="font-weight:600;font-size:13px;margin-bottom:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Albaranes incluidos en esta factura</div>
@@ -1143,7 +1177,7 @@ function renderDetalle(){
   const ed='contenteditable class="ce"';
   dc.innerHTML=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
       ${estBadge(a.estado_detalle)}
-      <span class="pill ${a.canal?'ok':'rev'}">${a.canal||'sin centro'}</span>
+      ${selectCentroModal(a.canal)}
       <span class="hint" style="margin:0">${a.fecha||''} · total ${fmt(a.total)}</span></div>
     <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px;font-size:13px">
       <span>Base imponible: <b ${ed} data-f="base">${a.base!=null?Number(a.base).toFixed(2):''}</b> €</span>
@@ -1515,6 +1549,88 @@ async function reprocesarUnoModal(){
   }catch(err){toast('Error: '+err.message,true);}
 }
 
+/* ---------- clasificar centro desde el modal ---------- */
+function selectCentroModal(actual){
+  const ops=['<option value="">— sin centro —</option>'].concat(CENTROS.map(c=>`<option value="${c}"${c===actual?' selected':''}>${c}</option>`)).join('');
+  return `<select class="selcentro" onchange="saveCanalModal(this.value)" title="Clasificar este documento en un centro de coste">${ops}</select>`;
+}
+async function saveCanalModal(val){
+  if(!revisarDoc)return;
+  const v=val||null;
+  try{
+    await sb(`compras_doc?id=eq.${revisarDoc.id}`,{method:'PATCH',body:JSON.stringify({canal:v})});
+    if(revisarDoc.tipo!=='factura'){
+      await sb(`compras_linea?doc_id=eq.${revisarDoc.id}`,{method:'PATCH',body:JSON.stringify({canal:v})});
+    }
+    revisarDoc.canal=v;
+    [albaranes,facturas].forEach(arr=>{const d=arr.find(x=>x.id===revisarDoc.id);if(d)d.canal=v;});
+    toast(v?`Centro: ${v}`:'Centro quitado');
+    await loadCompras();   // refresca listado de Compras y el Resumen sin cerrar el modal
+  }catch(err){toast('Error: '+err.message,true);}
+}
+
+/* ---------- Resumen / mini-dashboard ---------- */
+const MESES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+function setOpts(id,opts,allLabel){
+  const el=document.getElementById(id);if(!el)return;
+  const cur=el.value;
+  el.innerHTML=`<option value="">${allLabel}</option>`+opts.map(o=>`<option value="${o}">${o}</option>`).join('');
+  el.value=cur||'';
+}
+function renderDashboard(){
+  if(!document.getElementById('dashKpis'))return;
+  // base: líneas de albaranes, excluyendo duplicados
+  const base=compras.filter(r=>{const dc=r.compras_doc||{};return (dc.tipo||'')==='albaran' && dc.estado_detalle!=='DUPLICADO';});
+  const years=[...new Set(base.map(r=>{const f=(r.compras_doc||{}).fecha;return f?String(f).slice(0,4):null;}).filter(Boolean))].sort().reverse();
+  setOpts('dashCentro',CENTROS,'Todos los centros');
+  setOpts('dashAnio',years,'Todos los años');
+  const fCentro=document.getElementById('dashCentro').value;
+  const fAnio=document.getElementById('dashAnio').value;
+  const rows=base.filter(r=>{
+    if(fCentro && (r.canal||'')!==fCentro)return false;
+    if(fAnio && String((r.compras_doc||{}).fecha||'').slice(0,4)!==fAnio)return false;
+    return true;
+  });
+  // KPIs
+  const totalImp=rows.reduce((s,r)=>s+(num(r.importe)||0),0);
+  const nAlb=new Set(rows.map(r=>r.doc_id)).size;
+  const nProv=new Set(rows.map(r=>(r.compras_doc||{}).proveedor||'').filter(Boolean)).size;
+  const medio=nAlb?totalImp/nAlb:0;
+  document.getElementById('dashKpis').innerHTML=[
+    ['Importe total (sin IVA)',fmt(totalImp)],['Albaranes',nAlb],
+    ['Proveedores',nProv],['Medio por albarán',fmt(medio)]
+  ].map(([l,v])=>`<div class="kpi"><small>${l}</small><b>${v}</b></div>`).join('');
+  // helpers
+  const agrupa=(keyFn)=>{const m={};rows.forEach(r=>{const k=keyFn(r);if(k==null||k==='')return;m[k]=(m[k]||0)+(num(r.importe)||0);});return m;};
+  const barras=(obj)=>{
+    const ents=Object.entries(obj).sort((a,b)=>b[1]-a[1]);
+    if(!ents.length)return '<p class="hint" style="margin:0">Sin datos.</p>';
+    const mx=ents[0][1]||1;
+    return ents.map(([k,v])=>`<div class="brow"><div class="blab"><span>${k}</span><b>${fmt(v)}</b></div><div class="btrack"><div class="bfill" style="width:${Math.max(2,v/mx*100)}%"></div></div></div>`).join('');
+  };
+  // por centro
+  document.getElementById('dashPorCentro').innerHTML=barras(agrupa(r=>r.canal||'(sin centro)'));
+  // por mes (cronológico, últimos 12)
+  const porMes=agrupa(r=>{const f=(r.compras_doc||{}).fecha;return f?String(f).slice(0,7):null;});
+  const mesesEnt=Object.entries(porMes).sort((a,b)=>a[0]<b[0]?-1:1).slice(-12);
+  const mxMes=Math.max(1,...mesesEnt.map(e=>e[1]));
+  document.getElementById('dashPorMes').innerHTML=mesesEnt.length?mesesEnt.map(([k,v])=>{
+    const [y,m]=k.split('-');const lab=`${MESES[(+m)-1]||m} ${y}`;
+    return `<div class="brow"><div class="blab"><span>${lab}</span><b>${fmt(v)}</b></div><div class="btrack"><div class="bfill" style="width:${Math.max(2,v/mxMes*100)}%"></div></div></div>`;
+  }).join(''):'<p class="hint" style="margin:0">Sin datos.</p>';
+  // top proveedores (10)
+  const prov=agrupa(r=>(r.compras_doc||{}).proveedor);
+  const provTop=Object.fromEntries(Object.entries(prov).sort((a,b)=>b[1]-a[1]).slice(0,10));
+  document.getElementById('dashTopProv').innerHTML=barras(provTop);
+  // artículos más comprados (15) por importe, con cantidad
+  const art={};
+  rows.forEach(r=>{const k=r.producto||r.id_producto;if(!k)return;if(!art[k])art[k]={imp:0,cant:0};art[k].imp+=(num(r.importe)||0);art[k].cant+=(num(r.cantidad)||0);});
+  const artTop=Object.entries(art).sort((a,b)=>b[1].imp-a[1].imp).slice(0,15);
+  document.getElementById('dashTopArt').innerHTML=artTop.length
+    ?`<table><thead><tr><th>Artículo</th><th class="num">Cant.</th><th class="num">Importe</th></tr></thead><tbody>${artTop.map(([k,v])=>`<tr><td>${k}</td><td class="num">${v.cant?v.cant.toLocaleString('es-ES'):''}</td><td class="num">${fmt(v.imp)}</td></tr>`).join('')}</tbody></table>`
+    :'<p class="hint" style="margin:0">Sin datos.</p>';
+}
+
 async function loadProveedores(){
   try{
     proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
@@ -1811,7 +1927,8 @@ async function delRule(id){try{await sb(`compras_regla?id=eq.${id}`,{method:'DEL
 
 /* ---------- ui helpers ---------- */
 function tab(v){[...document.querySelectorAll('nav.tabs button')].forEach(b=>b.classList.toggle('active',b.dataset.v===v));
-  [...document.querySelectorAll('.view')].forEach(s=>s.classList.toggle('active',s.id==='v-'+v));}
+  [...document.querySelectorAll('.view')].forEach(s=>s.classList.toggle('active',s.id==='v-'+v));
+  if(v==='resumen')renderDashboard();}
 function fmt(n){if(n==null||n==='')return '';return Number(n).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';}
 function fmtCarga(ts){if(!ts)return '';const d=new Date(ts);if(isNaN(d))return '';const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} <span style="color:var(--muted);font-size:11px">${p(d.getHours())}:${p(d.getMinutes())}</span>`;}
 function estBadge(ed){
