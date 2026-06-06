@@ -622,7 +622,7 @@ async function procesarCola(){
 }
 function espera(ms){return new Promise(r=>setTimeout(r,ms));}
 
-async function procesarUno(c){
+function construirPromptOCR(t){
   const reglasTxt=reglas.length?reglas.map(r=>'- '+r.texto).join('\n'):'(todavía sin reglas)';
   const conPautas=proveedores.filter(p=>p.pautas&&p.pautas.trim());
   const pautasTxt=conPautas.length
@@ -672,9 +672,9 @@ PAUTAS DE FACTURA POR PROVEEDOR (si el proveedor de este documento coincide, sig
 ${pautaFacTxt}`;
   const instrAlbaran=`Un ALBARÁN lleva detalle de productos. Extrae en "lineas" cada producto: código, nombre, cantidad, precio_unit e importe.`;
 
-  if(tipo==='factura'){
+  if(t==='factura'){
     prompt=`${comun}\n\nEste documento es una FACTURA.\n${instrFactura}\n\nDevuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:\n${formaFactura}`;
-  }else if(tipo==='albaran'){
+  }else if(t==='albaran'){
     prompt=`${comun}\n\nEste documento es un ALBARÁN.\n${instrAlbaran}\n\nDevuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:\n${formaAlbaran}`;
   }else{
     // AUTO: clasificar primero, y según el tipo colocar los datos en el campo correcto
@@ -694,6 +694,38 @@ ${formaFactura}
 - Si es albarán, con esta forma EXACTA (campo "lineas", SIN "albaranes"):
 ${formaAlbaran}`;
   }
+  return prompt;
+}
+async function guardarLineasDoc(docId,dLineas,canal,proveedor_id,proveedorNombre){
+  const lineas=[];
+  for(const l of (dLineas||[])){
+    let producto_id=null;
+    const ref=(l.id_producto||'').trim();
+    if(ref && proveedor_id){
+      const ex=await sb(`compras_producto?proveedor_id=eq.${proveedor_id}&ref_proveedor=eq.${encodeURIComponent(ref)}&select=id`);
+      if(ex.length){
+        producto_id=ex[0].id;
+        await sb(`compras_producto?id=eq.${producto_id}`,{method:'PATCH',body:JSON.stringify({ultimo_precio:num(l.precio_unit)})});
+      }else{
+        let codigo=null;
+        try{
+          const r=await fetch(`${SB_URL}/rest/v1/rpc/compras_next_codigo`,{
+            method:'POST',headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,'Content-Type':'application/json'},body:'{}'});
+          codigo=(await r.text()).replace(/"/g,'').trim()||null;
+        }catch(e){console.warn('codigo interno:',e.message);}
+        const np=await sb('compras_producto',{method:'POST',body:JSON.stringify({
+          codigo_interno:codigo,ref_proveedor:ref,nombre:l.producto||null,
+          proveedor_id,proveedor_nombre:proveedorNombre||null,ultimo_precio:num(l.precio_unit)})});
+        producto_id=np[0].id;
+      }
+    }
+    lineas.push({doc_id:docId,id_producto:ref||null,producto:l.producto||null,
+      cantidad:num(l.cantidad),precio_unit:num(l.precio_unit),importe:num(l.importe),canal,producto_id});
+  }
+  if(lineas.length)await sb('compras_linea',{method:'POST',body:JSON.stringify(lineas)});
+}
+async function procesarUno(c){
+  const prompt=construirPromptOCR(tipo);
   const block = c.mime==='application/pdf'
     ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
     : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}};
@@ -796,32 +828,7 @@ ${formaAlbaran}`;
 
   // 5) líneas de producto: SOLO para albaranes (las facturas no generan productos)
   if(!esFactura){
-    const lineas=[];
-    for(const l of (d.lineas||[])){
-      let producto_id=null;
-      const ref=(l.id_producto||'').trim();
-      if(ref && proveedor_id){
-        const ex=await sb(`compras_producto?proveedor_id=eq.${proveedor_id}&ref_proveedor=eq.${encodeURIComponent(ref)}&select=id`);
-        if(ex.length){
-          producto_id=ex[0].id;
-          await sb(`compras_producto?id=eq.${producto_id}`,{method:'PATCH',body:JSON.stringify({ultimo_precio:num(l.precio_unit)})});
-        }else{
-          let codigo=null;
-          try{
-            const r=await fetch(`${SB_URL}/rest/v1/rpc/compras_next_codigo`,{
-              method:'POST',headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,'Content-Type':'application/json'},body:'{}'});
-            codigo=(await r.text()).replace(/"/g,'').trim()||null;
-          }catch(e){console.warn('codigo interno:',e.message);}
-          const np=await sb('compras_producto',{method:'POST',body:JSON.stringify({
-            codigo_interno:codigo,ref_proveedor:ref,nombre:l.producto||null,
-            proveedor_id,proveedor_nombre:d.proveedor||null,ultimo_precio:num(l.precio_unit)})});
-          producto_id=np[0].id;
-        }
-      }
-      lineas.push({doc_id:docId,id_producto:ref||null,producto:l.producto||null,
-        cantidad:num(l.cantidad),precio_unit:num(l.precio_unit),importe:num(l.importe),canal,producto_id});
-    }
-    if(lineas.length)await sb('compras_linea',{method:'POST',body:JSON.stringify(lineas)});
+    await guardarLineasDoc(docId,d.lineas,canal,proveedor_id,d.proveedor);
   }
 }
 function num(x){if(x==null||x==='')return null;const n=parseFloat(String(x).replace(',','.'));return isNaN(n)?null:n;}
@@ -880,22 +887,22 @@ function exportXlsx(){
 
 /* ---------- albaranes ---------- */
 async function loadAlbaranes(){
-  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url&order=created_at.desc");renderAlb();}
+  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderAlb();}
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
 }
 function renderAlb(){
   let rows=[...albaranes];
   const st=sortState.albaranes;
-  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headAlb').innerHTML=
-    thh('albaranes','fecha','Fecha')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
+    thh('albaranes','fecha','Fecha')+thh('albaranes','cargado','Cargado')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
     thh('albaranes','centro','Centro')+thh('albaranes','total','Total','num')+thh('albaranes','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('albBody');
   document.getElementById('albCount').textContent=albaranes.length;
   document.getElementById('emptyA').style.display=albaranes.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
-    <td>${a.fecha||''}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
+    <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
@@ -906,7 +913,7 @@ function exportAlb(){
   const st=sortState.albaranes;
   const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
-  const data=rows.map(a=>({Fecha:a.fecha||'',Proveedor:a.proveedor||'','Nº albarán':a.num_documento||'',
+  const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº albarán':a.num_documento||'',
     Centro:a.canal||'',Total:a.total??'',Estado:a.estado_detalle||'REVISAR'}));
   if(!data.length){toast('No hay albaranes que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
@@ -914,7 +921,7 @@ function exportAlb(){
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function loadFacturas(){
-  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url&order=created_at.desc");renderFac();}
+  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,num_documento,canal,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderFac();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
 }
 // Repasa TODOS los documentos del tipo y marca como DUPLICADO los que repiten
@@ -1012,16 +1019,16 @@ async function limpiarLineasFacturas(){
 function renderFac(){
   let rows=[...facturas];
   const st=sortState.facturas;
-  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headFac').innerHTML=
-    thh('facturas','fecha','Fecha')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
+    thh('facturas','fecha','Fecha')+thh('facturas','cargado','Cargado')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
     thh('facturas','centro','Centro')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('facBody');
   document.getElementById('facCount').textContent=facturas.length;
   document.getElementById('emptyF').style.display=facturas.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
-    <td>${a.fecha||''}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
+    <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
@@ -1042,9 +1049,9 @@ async function saveDocCanal(docId,val){
 function exportFac(){
   let rows=[...facturas];
   const st=sortState.facturas;
-  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
-  const data=rows.map(a=>({Fecha:a.fecha||'',Proveedor:a.proveedor||'','Nº factura':a.num_documento||'',
+  const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº factura':a.num_documento||'',
     Centro:a.canal||'',Total:a.total??'',Estado:a.estado_detalle||'REVISAR'}));
   if(!data.length){toast('No hay facturas que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
@@ -1052,7 +1059,7 @@ function exportFac(){
   XLSX.writeFile(wb,`facturas_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function revisar(docId){
-  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,total,descuento,estado,estado_detalle,imagen_url,albaranes_detectados`);
+  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,iva,total,descuento,estado,estado_detalle,imagen_url,albaranes_detectados,proveedor_id,proveedor_nif`);
   if(!r.length){toast('No encontrado',true);return;}
   const a=r[0];
   revisarDoc=a;  // guardamos el doc abierto para la edición
@@ -1108,6 +1115,7 @@ function renderDetalle(){
       <p class="hint" style="margin-top:14px">Edita cualquier celda comparando con la foto. Útil para facturas con formatos difíciles. Al guardar se actualiza la lista.</p>
       <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn" onclick="guardarAlbaranes()">Guardar cambios</button>
+        <button class="btn ghost" onclick="reprocesarUnoModal()" title="Volver a leer con la IA aplicando las pautas del proveedor">↻ Reprocesar</button>
         <button class="btn ghost del-btn" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')">🗑 Borrar documento</button>
       </div>`;
     dc.querySelectorAll('.ce').forEach(el=>el.addEventListener('input',recalcAlb));
@@ -1143,6 +1151,7 @@ function renderDetalle(){
     <p class="hint">Edita cualquier celda (clic) comparando con la foto. Al guardar se recalcula el cuadre.</p>
     <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn" onclick="guardarRevision()">Guardar cambios</button>
+      <button class="btn ghost" onclick="reprocesarUnoModal()" title="Volver a leer con la IA aplicando las pautas del proveedor">↻ Reprocesar</button>
       <button class="btn ghost del-btn" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')">🗑 Borrar documento</button>
     </div>`;
   // recalcular el aviso en vivo al editar
@@ -1373,6 +1382,127 @@ function exportProd(){
 }
 
 /* ---------- proveedores ---------- */
+/* ---------- reproceso con IA (re-OCR de documentos ya guardados) ---------- */
+function preferir(nuevo,viejo){return nuevo!=null?nuevo:(viejo!=null?viejo:null);}
+async function urlABase64(url){
+  const r=await fetch(url);
+  if(!r.ok)throw new Error('no pude descargar la foto ('+r.status+')');
+  const blob=await r.blob();
+  let mime=blob.type||'';
+  if(!mime)mime=url.toLowerCase().endsWith('.pdf')?'application/pdf':'image/jpeg';
+  const b64=await new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(',')[1]);fr.onerror=()=>rej(new Error('no pude leer la foto'));fr.readAsDataURL(blob);});
+  return {b64,mime};
+}
+// Vuelve a leer con la IA un documento ya guardado, aplicando las pautas actuales.
+// Mantiene el centro elegido a mano y el proveedor; refresca importes, descuento,
+// lineas y estado. Devuelve {ok, estado} o {ok:false, motivo}.
+async function reprocesarDoc(doc){
+  if(!doc.imagen_url)return {ok:false,motivo:'sin foto guardada'};
+  const {b64,mime}=await urlABase64(doc.imagen_url);
+  const prompt=construirPromptOCR(doc.tipo);
+  const block=mime==='application/pdf'
+    ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}
+    : {type:"image",source:{type:"base64",media_type:mime,data:b64}};
+  const d=parseJson(await callAI([block,{type:"text",text:prompt}]));
+  const esFactura=(doc.tipo==='factura');
+  const canal=doc.canal||null;            // se respeta el centro asignado a mano
+  // red de seguridad: factura con los albaranes metidos en "lineas"
+  if(esFactura && (!d.albaranes||!d.albaranes.length) && Array.isArray(d.lineas) && d.lineas.length){
+    const rescatados=d.lineas
+      .filter(l=>/albar[áa]n/i.test(l.producto||'')||/^[A-Z]{1,3}[-\s]?\d{4,}/.test((l.producto||'').trim()))
+      .map(l=>{const txt=l.producto||'';const mNum=txt.match(/([A-Z]{1,3}[-\s]?\d{4,})/i);const mFecha=txt.match(/(\d{2}[\/.-]\d{2}[\/.-]\d{2,4})/);
+        return {num_albaran:l.id_producto||(mNum?mNum[1]:'')||'',fecha:mFecha?mFecha[1]:null,importe:num(l.importe)};});
+    if(rescatados.length){d.albaranes=rescatados;d.lineas=[];}
+  }
+  // consolidar albaranes repetidos (mismo nº) sumando importes
+  if(esFactura && Array.isArray(d.albaranes) && d.albaranes.length){
+    const mapa=new Map();
+    for(const a of d.albaranes){
+      const k=String(a.num_albaran||'').trim().toUpperCase()||('__'+Math.random());
+      if(mapa.has(k)){const prev=mapa.get(k);prev.importe=(num(prev.importe)||0)+(num(a.importe)||0);if(!prev.fecha&&a.fecha)prev.fecha=a.fecha;}
+      else mapa.set(k,{num_albaran:a.num_albaran||'',fecha:a.fecha||null,importe:num(a.importe)});
+    }
+    d.albaranes=[...mapa.values()];
+  }
+  const fechaF=d.fecha||doc.fecha||null;
+  const numF=d.num_documento||doc.num_documento||null;
+  const total=preferir(num(d.total),doc.total);
+  const base=preferir(num(d.base),doc.base);
+  const iva=preferir(num(d.iva),doc.iva);
+  const descuento=preferir(num(d.descuento),doc.descuento);
+  const hashDoc=firmaDup(numF,fechaF,total);
+  let estadoDet='CORRECTO';
+  if(hashDoc){
+    const dup=await sb(`compras_doc?hash_doc=eq.${encodeURIComponent(hashDoc)}&id=neq.${doc.id}&select=id&limit=1`);
+    if(dup.length)estadoDet='DUPLICADO';
+  }
+  if(estadoDet==='CORRECTO'){
+    if(esFactura){if(total==null)estadoDet='REVISAR';}
+    else{
+      if(!(d.lineas||[]).length)estadoDet='REVISAR';
+      else{
+        const sumaLineas=(d.lineas||[]).reduce((s,l)=>s+(num(l.importe)||0),0);
+        const c=cuadreAlbaranes(sumaLineas-(num(descuento)||0),base,total);
+        estadoDet=(c.ok===true)?'CORRECTO':(c.ok===false)?'NO_CUADRA':'REVISAR';
+      }
+    }
+  }
+  const estadoSimple=(estadoDet==='CORRECTO')?(canal?'OK':'REVISAR'):'REVISAR';
+  await sb(`compras_doc?id=eq.${doc.id}`,{method:'PATCH',body:JSON.stringify({
+    fecha:fechaF,num_documento:numF,base,iva,total,descuento,
+    estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,
+    albaranes_detectados:esFactura?(d.albaranes||[]):null,raw:d})});
+  if(!esFactura){
+    await sb(`compras_linea?doc_id=eq.${doc.id}`,{method:'DELETE'});
+    await guardarLineasDoc(doc.id,d.lineas,canal,doc.proveedor_id||null,doc.proveedor||null);
+  }
+  return {ok:true,estado:estadoDet};
+}
+async function ejecutarReproceso(docs,etiqueta){
+  const GAP=13000;let ok=0,fail=0,arreglados=0;
+  for(let i=0;i<docs.length;i++){
+    toast(`Releyendo ${i+1}/${docs.length}${etiqueta?' · '+etiqueta:''}…`);
+    try{
+      const res=await reprocesarDoc(docs[i]);
+      if(res.ok){ok++;if(res.estado==='CORRECTO')arreglados++;}else fail++;
+    }catch(err){
+      const msg=err.message||String(err);
+      if(/rate limit|429/i.test(msg)){
+        toast('Límite de IA alcanzado, espero 60s…');await espera(60000);
+        try{const res=await reprocesarDoc(docs[i]);ok++;if(res.estado==='CORRECTO')arreglados++;}
+        catch(e2){fail++;console.error(e2);}
+      }else{fail++;console.error(err);}
+    }
+    if(i<docs.length-1)await espera(GAP);
+  }
+  await loadAlbaranes();await loadFacturas();await loadCompras();await loadProveedores();
+  toast(`Reproceso listo · ${ok} releído(s)${arreglados?`, ${arreglados} ya cuadran`:''}${fail?`, ${fail} con error`:''}`);
+}
+async function reprocesarProveedor(provId){
+  const p=proveedores.find(x=>x.id===provId);const nom=p?p.nombre:'';
+  let docs;
+  try{docs=await sb(`compras_doc?proveedor_id=eq.${provId}&estado_detalle=in.(NO_CUADRA,REVISAR)&select=id,tipo,imagen_url,canal,num_documento,fecha,proveedor,proveedor_nif,proveedor_id,base,iva,total,descuento&order=created_at.desc`);}
+  catch(err){toast('Error: '+err.message,true);return;}
+  const conImg=docs.filter(d=>d.imagen_url);
+  if(!conImg.length){toast(`No hay documentos sin cuadrar (con foto) de ${nom}`);return;}
+  const mins=Math.max(1,Math.ceil(conImg.length*13/60));
+  if(!confirm(`Voy a volver a leer con la IA ${conImg.length} documento(s) sin cuadrar de ${nom}, aplicando sus pautas actuales.\n\nSolo toco los que están "no cuadra" o "revisar"; los correctos no se tocan. Tardará ~${mins} min, deja la pestaña abierta.\n\n¿Continuar?`))return;
+  await ejecutarReproceso(conImg,nom);
+}
+async function reprocesarUnoModal(){
+  if(!revisarDoc)return;
+  if(!revisarDoc.imagen_url){toast('Este documento no tiene foto guardada',true);return;}
+  if(!confirm('Voy a volver a leer este documento con la IA aplicando las pautas actuales del proveedor. Se sobreescriben los datos leídos (el centro asignado se mantiene).\n\n¿Continuar?'))return;
+  const id=revisarDoc.id;
+  toast('Releyendo documento…');
+  try{
+    const res=await reprocesarDoc(revisarDoc);
+    await loadAlbaranes();await loadFacturas();await loadCompras();
+    if(res.ok){toast('Documento releído · '+(res.estado==='CORRECTO'?'ahora cuadra ✓':res.estado==='NO_CUADRA'?'sigue sin cuadrar':res.estado));await revisar(id);}
+    else toast('No se pudo: '+res.motivo,true);
+  }catch(err){toast('Error: '+err.message,true);}
+}
+
 async function loadProveedores(){
   try{
     proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
@@ -1410,7 +1540,7 @@ function renderProv(){
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pauta_factura',this.textContent)" contenteditable>${p.pauta_factura||'—'}</span></td>
     <td>${celdaMuestras(p)}</td>
     <td class="num">${p._n}</td>
-    <td>${p.autorizado===false?accionesNuevo(p):`<span class="pill ok">ok</span> <span class="link" style="font-size:12px" onclick="fusionUI('${p.id}')">fusionar</span>`}</td>
+    <td>${p.autorizado===false?accionesNuevo(p):`<span class="pill ok">ok</span> <span class="link" style="font-size:12px" onclick="fusionUI('${p.id}')">fusionar</span>${p._n>0?` · <span class="link" style="font-size:12px" onclick="reprocesarProveedor('${p.id}')" title="Volver a leer con la IA los documentos sin cuadrar de este proveedor">↻ reprocesar</span>`:''}`}</td>
   </tr>`).join('');
 }
 // ---- documentos de muestra por proveedor (para entrenar el OCR) ----
@@ -1613,9 +1743,24 @@ function exportProv(){
 }
 async function saveProv(id,campo,val){
   val=val.trim();if(val==='—')val='';
-  try{await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({[campo]:val||null})});
-    const p=proveedores.find(x=>x.id===id);if(p)p[campo]=val;toast('Proveedor actualizado');}
-  catch(err){toast('Error: '+err.message,true);loadProveedores();}
+  try{
+    await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({[campo]:val||null})});
+    const p=proveedores.find(x=>x.id===id);if(p)p[campo]=val;
+    toast('Proveedor actualizado');
+    if((campo==='pautas'||campo==='pauta_factura') && val){
+      const tipoFiltro=(campo==='pautas')?'&tipo=eq.albaran':'&tipo=eq.factura';
+      const etq=(campo==='pautas')?'albarán(es)':'factura(s)';
+      let pend=[];
+      try{pend=await sb(`compras_doc?proveedor_id=eq.${id}&estado_detalle=in.(NO_CUADRA,REVISAR)${tipoFiltro}&select=id,tipo,imagen_url,canal,num_documento,fecha,proveedor,proveedor_nif,proveedor_id,base,iva,total,descuento&order=created_at.desc`);}catch(e){}
+      const conImg=pend.filter(d=>d.imagen_url);
+      if(conImg.length){
+        const mins=Math.max(1,Math.ceil(conImg.length*13/60));
+        if(confirm(`Pauta guardada.\n\nHay ${conImg.length} ${etq} de ${p?p.nombre:'este proveedor'} sin cuadrar. ¿Volver a leerlos ahora con la IA aplicando la nueva pauta?\n\n(Solo se tocan los que no cuadran; tardará ~${mins} min.)`)){
+          await ejecutarReproceso(conImg,p?p.nombre:'');
+        }
+      }
+    }
+  }catch(err){toast('Error: '+err.message,true);loadProveedores();}
 }
 
 /* ---------- reglas / chat ---------- */
@@ -1656,6 +1801,7 @@ async function delRule(id){try{await sb(`compras_regla?id=eq.${id}`,{method:'DEL
 function tab(v){[...document.querySelectorAll('nav.tabs button')].forEach(b=>b.classList.toggle('active',b.dataset.v===v));
   [...document.querySelectorAll('.view')].forEach(s=>s.classList.toggle('active',s.id==='v-'+v));}
 function fmt(n){if(n==null||n==='')return '';return Number(n).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';}
+function fmtCarga(ts){if(!ts)return '';const d=new Date(ts);if(isNaN(d))return '';const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} <span style="color:var(--muted);font-size:11px">${p(d.getHours())}:${p(d.getMinutes())}</span>`;}
 function estBadge(ed){
   const map={CORRECTO:['correcto','🟢 Correcto'],DUPLICADO:['duplicado','🔴 Duplicado'],
     NO_CUADRA:['nocuadra','🟠 No cuadra'],REVISAR:['revisar','🟡 Revisar']};
