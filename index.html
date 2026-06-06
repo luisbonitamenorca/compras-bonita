@@ -361,7 +361,8 @@
     <section id="v-conciliacion" class="view">
       <div class="panel">
         <div class="filters">
-          <div><label class="fld">Proveedor</label><input id="concilProv" type="text" placeholder="filtrar…" oninput="renderConciliacion()"></div>
+          <div><label class="fld">Proveedor</label><select id="concilProv" onchange="renderConciliacion()"></select></div>
+          <div><label class="fld">Mes</label><select id="concilMes" onchange="renderConciliacion()"></select></div>
           <div><label class="fld">Mostrar</label><select id="concilEstado" onchange="renderConciliacion()">
             <option value="">Todos</option>
             <option value="falta">Solo los que faltan</option>
@@ -1758,26 +1759,35 @@ function renderConciliacion(){
         factura:f.num_documento||'',importe:al.importe,facturaId:f.id,tiene:!!albId,albId});
     });
   });
-  conciliacionRows=rows;
-  // KPIs
-  const total=rows.length,ok=rows.filter(r=>r.tiene).length,falta=total-ok;
-  document.getElementById('concilKpis').innerHTML=[
-    ['Albaranes en facturas',total],['Los tenemos',ok],
-    ['Faltan',`<span style="color:var(--warn)">${falta}</span>`],['Facturas sin albaranes leídos',sinDet]
-  ].map(([l,v])=>`<div class="kpi"><small>${l}</small><b>${v}</b></div>`).join('');
-  // filtros
-  const fp=(document.getElementById('concilProv').value||'').toLowerCase();
+  // poblar filtros de proveedor y mes (desde todas las filas)
+  const provs=[...new Set(rows.map(r=>r.proveedor).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  setOpts('concilProv',provs,'Todos los proveedores');
+  const meses=[...new Set(rows.map(r=>String(r.fecha||'').slice(0,7)).filter(x=>/^\d{4}-\d{2}$/.test(x)))].sort().reverse();
+  (()=>{const el=document.getElementById('concilMes');if(!el)return;const cur=el.value;
+    el.innerHTML='<option value="">Todos los meses</option>'+meses.map(m=>{const a=m.split('-');return `<option value="${m}">${MESES[(+a[1])-1]||a[1]} ${a[0]}</option>`;}).join('');
+    el.value=cur||'';})();
+  // filtros activos
+  const fp=document.getElementById('concilProv').value;
+  const fmes=document.getElementById('concilMes').value;
   const fe=document.getElementById('concilEstado').value;
   let vis=rows.filter(r=>{
-    if(fp&&!r.proveedor.toLowerCase().includes(fp))return false;
+    if(fp&&r.proveedor!==fp)return false;
+    if(fmes&&String(r.fecha||'').slice(0,7)!==fmes)return false;
     if(fe==='falta'&&r.tiene)return false;
     if(fe==='ok'&&!r.tiene)return false;
     return true;
   });
+  // KPIs (sobre lo que muestra el filtro)
+  const total=vis.length,ok=vis.filter(r=>r.tiene).length,falta=total-ok;
+  document.getElementById('concilKpis').innerHTML=[
+    ['Albaranes (filtro)',total],['Los tenemos',ok],
+    ['Faltan',`<span style="color:var(--warn)">${falta}</span>`],['Facturas sin albaranes leídos',sinDet]
+  ].map(([l,v])=>`<div class="kpi"><small>${l}</small><b>${v}</b></div>`).join('');
   // orden
   const st=sortState.conciliacion;
   const keymap={prov:r=>r.proveedor,fecha:r=>r.fecha,nalb:r=>r.num_albaran,fact:r=>r.factura,imp:r=>num(r.importe),estado:r=>r.tiene?1:0};
   if(st.key&&keymap[st.key])vis=sortRows(vis,keymap[st.key],st.dir);
+  conciliacionRows=vis;
   document.getElementById('headConcil').innerHTML=
     thh('conciliacion','prov','Proveedor')+thh('conciliacion','fecha','Fecha')+thh('conciliacion','nalb','Nº albarán')+
     thh('conciliacion','fact','Factura')+thh('conciliacion','imp','Importe','num')+thh('conciliacion','estado','¿Lo tenemos?');
