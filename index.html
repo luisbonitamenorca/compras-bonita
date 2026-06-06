@@ -126,6 +126,8 @@
   .est.revisar{background:var(--warn-soft);color:var(--warn)}
   .selcentro{font-size:12px;padding:3px 6px;border:0.5px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer;max-width:150px}
   .selcentro:hover{border-color:var(--wine)}
+  .selcuenta{font-size:12px;padding:3px 6px;border:0.5px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer;max-width:240px}
+  .selcuenta:hover{border-color:var(--wine)}
   .btn.del-btn{color:var(--wine);border-color:var(--wine-soft)}
   .btn.del-btn:hover{background:var(--wine);color:#fff;border-color:var(--wine)}
 
@@ -386,6 +388,7 @@
         <div class="barrow">
           <div class="total"><small>Proveedores</small><span id="provCount">0</span></div>
           <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn" onclick="nuevoProveedor()">➕ Nuevo proveedor</button>
             <button class="btn ghost" onclick="importarProveedores()">⬇ Importar lista</button>
             <button class="btn ghost" onclick="loadProveedores()">↻ Refrescar</button>
             <button class="btn" onclick="exportProv()">Exportar Excel</button>
@@ -1631,9 +1634,65 @@ function renderDashboard(){
     :'<p class="hint" style="margin:0">Sin datos.</p>';
 }
 
+/* ---------- plan de cuentas de gasto + alta de proveedor ---------- */
+const CUENTAS=[{c:'600000000',n:'COMPRAS'},{c:'600000999',n:'TRANSPORTES SOBRE COMPRAS'},{c:'602000000',n:'OTROS APROVISIONAMIENTOS'},{c:'607000000',n:'TRABAJOS OTRAS EMPRESAS'},{c:'608000000',n:'ABONO SOBRE COMPRAS'},{c:'609000000',n:'RAPPELS'},{c:'621000000',n:'ALQUILER'},{c:'621000100',n:'RENTING'},{c:'622000000',n:'REPARACIONES Y CONSERVACION'},{c:'622000001',n:'MANTENIMIENTO INFORMATICO'},{c:'623000001',n:'GESTORIA'},{c:'623000002',n:'SERVICIO PREVENCION'},{c:'623000003',n:'MUTUA'},{c:'623000004',n:'LABORATORIO'},{c:'623000005',n:'ASESORAMIENTO TECNICO'},{c:'624000000',n:'TRANSPORTES'},{c:'625000000',n:'SEGUROS'},{c:'626000001',n:'COMISION IGT (AGORA PAYMENTS)'},{c:'626000002',n:'COMISION BANCARIA'},{c:'626000003',n:'COMISION STRIPE (SHOPIFY)'},{c:'626000004',n:'COMISION ISBA'},{c:'626000005',n:'COMISION CODETICKETS'},{c:'627000000',n:'MARKETING'},{c:'628000001',n:'ELECTRICIDAD'},{c:'628000002',n:'AGUA'},{c:'628000003',n:'GAS'},{c:'628000004',n:'CARBON'},{c:'628000005',n:'COMBUSTIBLE'},{c:'629000001',n:'GASTOS VARIOS'},{c:'629000002',n:'UNIFORMES'},{c:'629000003',n:'LIMPIEZA'},{c:'629000004',n:'SOFTWARE (AGORA, YUREST, SKELLO)'},{c:'629000005',n:'SEGURIDAD (EXTINTORES Y CAMARAS)'},{c:'629000006',n:'VAJILLA'},{c:'629000007',n:'GASTOS DE INVERSION'},{c:'678000000',n:'GASTOS NO DEDUCIBLES'}];
+function selectCuenta(provId,actual){
+  const ops=['<option value="">— sin cuenta —</option>'].concat(
+    CUENTAS.map(c=>`<option value="${c.c}"${c.c===actual?' selected':''}>${c.c} — ${c.n}</option>`)).join('');
+  return `<select class="selcuenta" onchange="saveCuenta('${provId}',this.value)" title="Cuenta contable de gasto (para exportar)">${ops}</select>`;
+}
+async function saveCuenta(id,val){
+  try{
+    await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({cuenta_contable:val||null})});
+    const p=proveedores.find(x=>x.id===id);if(p)p.cuenta_contable=val||null;
+    toast(val?'Cuenta asignada':'Cuenta quitada');
+  }catch(err){toast('Error: '+err.message,true);loadProveedores();}
+}
+function nuevoProveedor(){
+  const ov=document.createElement('div');
+  ov.className='modal show';ov.style.zIndex='80';
+  const opsCuenta=['<option value="">— sin cuenta —</option>'].concat(CUENTAS.map(c=>`<option value="${c.c}">${c.c} — ${c.n}</option>`)).join('');
+  ov.innerHTML=`<div class="box" style="max-width:480px">
+    <div class="head"><h3>Nuevo proveedor</h3><button class="close" type="button">×</button></div>
+    <div style="padding:18px 22px;display:flex;flex-direction:column;gap:13px">
+      <div><label class="fld">Nombre *</label><input type="text" id="npNombre" autocomplete="off" placeholder="Razón social"></div>
+      <div><label class="fld">CIF / NIF</label><input type="text" id="npNif" autocomplete="off" placeholder="opcional"></div>
+      <div><label class="fld">Categoría</label><input type="text" id="npCat" autocomplete="off" placeholder="opcional (ej. COCINA)"></div>
+      <div><label class="fld">Cuenta contable</label><select id="npCuenta" style="width:100%;font-size:13px;padding:7px;border:0.5px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)">${opsCuenta}</select></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:4px">
+        <button class="btn ghost" type="button" id="npCancel">Cancelar</button>
+        <button class="btn" type="button" id="npGo">Crear proveedor</button>
+      </div>
+    </div></div>`;
+  document.body.appendChild(ov);
+  const cerrar=()=>ov.remove();
+  ov.querySelector('.close').onclick=cerrar;
+  ov.querySelector('#npCancel').onclick=cerrar;
+  ov.onclick=e=>{if(e.target===ov)cerrar();};
+  const crear=async()=>{
+    const nombre=ov.querySelector('#npNombre').value.trim();
+    const nif=ov.querySelector('#npNif').value.trim();
+    const cat=ov.querySelector('#npCat').value.trim();
+    const cuenta=ov.querySelector('#npCuenta').value;
+    if(!nombre){toast('El nombre es obligatorio',true);ov.querySelector('#npNombre').focus();return;}
+    try{
+      await sb('compras_proveedor',{method:'POST',body:JSON.stringify({
+        nombre,nif:nif||null,nif_norm:normNif(nif),nombre_norm:normName(nombre),
+        categoria:cat||null,cuenta_contable:cuenta||null,autorizado:true})});
+      cerrar();toast('Proveedor creado');await loadProveedores();
+    }catch(err){
+      const m=/duplicate|23505|unique/i.test(err.message||'')?'Ya existe un proveedor con ese CIF/NIF':err.message;
+      toast('Error al crear: '+m,true);
+    }
+  };
+  ov.querySelector('#npGo').onclick=crear;
+  ov.querySelector('#npNif').addEventListener('keydown',e=>{if(e.key==='Enter')crear();});
+  setTimeout(()=>ov.querySelector('#npNombre').focus(),50);
+}
+
 async function loadProveedores(){
   try{
-    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
+    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,cuenta_contable,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
     const docs=await sb('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
     proveedores.forEach(p=>p._n=cnt[p.id]||0);
@@ -1653,7 +1712,7 @@ function renderProv(){
     av.innerHTML=`⚠️ Hay ${nuevos.length} proveedor${nuevos.length>1?'es':''} nuevo${nuevos.length>1?'s':''} sin autorizar, detectado${nuevos.length>1?'s':''} al procesar documentos. Revísalos: corrige el nombre/CIF si hace falta y autorízalos.`;
   }else av.style.display='none';
   document.getElementById('headProv').innerHTML=
-    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','cat','Categoría')+
+    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','cat','Categoría')+'<th>Cuenta contable</th>'+
     thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th><th>Muestras</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
   const tb=document.getElementById('provBody');
   document.getElementById('provCount').textContent=proveedores.length;
@@ -1663,6 +1722,7 @@ function renderProv(){
     <td><span class="editable" onblur="saveProv('${p.id}','nif',this.textContent)" contenteditable>${p.nif||'—'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','alias',this.textContent)" contenteditable>${p.alias||'—'}</span></td>
     <td><span class="editable" onblur="saveProv('${p.id}','categoria',this.textContent)" contenteditable>${p.categoria||'—'}</span></td>
+    <td>${selectCuenta(p.id,p.cuenta_contable)}</td>
     <td><span class="swi" onclick="toggleCritico('${p.id}')" title="Marcar crítico">${p.critico?'🔴':'⚪️'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pautas',this.textContent)" contenteditable>${p.pautas||'—'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pauta_factura',this.textContent)" contenteditable>${p.pauta_factura||'—'}</span></td>
@@ -1863,7 +1923,7 @@ function exportProv(){
   const keymap={nombre:p=>p.nombre,nif:p=>p.nif,cat:p=>p.categoria,crit:p=>p.critico?1:0,docs:p=>p._n};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(p=>({Nombre:p.nombre||'','CIF / NIF':p.nif||'',Categoría:p.categoria||'',
-    Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
+    'Cuenta contable':p.cuenta_contable||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
   if(!data.length){toast('No hay proveedores que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Proveedores');
