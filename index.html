@@ -549,8 +549,57 @@ window.addEventListener('DOMContentLoaded',()=>{
   el.addEventListener('dragleave',()=>el.classList.remove('hot'));
   el.addEventListener('drop',x=>{x.preventDefault();el.classList.remove('hot');addFiles(x.dataTransfer.files);});
   loadReglas(); loadCompras(); loadAlbaranes(); loadFacturas(); loadProveedores(); loadProductos();
+  sincronizarCorreo();
 });
 function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();loadProveedores();loadProductos();toast('Sincronizado');}
+
+/* ---------- ingesta automática desde el correo ---------- */
+// 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
+// 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
+async function sincronizarCorreo(){
+  try{
+    try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
+    // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias) de hace más de 1h
+    const hace1h=new Date(Date.now()-3600e3).toISOString();
+    await sb(`compras_correo_adjunto?estado=eq.PROCESANDO&created_at=lt.${hace1h}`,{method:'PATCH',body:JSON.stringify({estado:'PENDIENTE'})}).catch(()=>{});
+    const pend=await sb('compras_correo_adjunto?estado=eq.PENDIENTE&select=id,nombre_archivo,mime,url&order=created_at.asc&limit=20');
+    if(!pend.length)return;
+    let n=0;
+    for(const a of pend){
+      // reclamar el adjunto: si otro navegador lo cogió primero, el PATCH no devuelve fila
+      const claim=await sb(`compras_correo_adjunto?id=eq.${a.id}&estado=eq.PENDIENTE`,{method:'PATCH',body:JSON.stringify({estado:'PROCESANDO'})});
+      if(!claim.length)continue;
+      try{
+        const r=await fetch(a.url);
+        if(!r.ok)throw new Error('descarga '+r.status);
+        const blob=await r.blob();
+        const mime=a.mime||blob.type||'application/pdf';
+        let file=new File([blob],a.nombre_archivo||'documento.pdf',{type:mime});
+        let b64,mimeFinal=mime;
+        if(mime.startsWith('image/')){
+          try{const cmp=await comprimirImagen(file);file=cmp.file;b64=cmp.b64;mimeFinal=cmp.mime;}
+          catch(e){b64=await blobB64(blob);}
+        }else{
+          b64=await blobB64(blob);
+        }
+        cola.push({file,b64,mime:mimeFinal,status:'wait',correoAdjId:a.id});
+        n++;
+      }catch(err){
+        await sb(`compras_correo_adjunto?id=eq.${a.id}`,{method:'PATCH',body:JSON.stringify({estado:'ERROR',error:(err.message||'').slice(0,300)})}).catch(()=>{});
+      }
+    }
+    if(n){
+      renderQueue();
+      toast(`\u{1F4E7} ${n} documento${n>1?'s':''} recibido${n>1?'s':''} por correo · procesando…`);
+      procesarCola(true);
+    }
+  }catch(err){console.warn('sincronizarCorreo:',err.message);}
+}
+function blobB64(blob){return new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(rd.result.split(',')[1]);rd.onerror=()=>rej(new Error('lectura'));rd.readAsDataURL(blob);});}
+function marcarAdjuntoError(c){
+  if(!c.correoAdjId)return;
+  sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'ERROR',error:(c.error||'').slice(0,300)})}).catch(()=>{});
+}
 
 /* ---------- supabase REST ---------- */
 async function sb(path,opts={}){
@@ -646,16 +695,16 @@ function renderQueue(){
   q.innerHTML=cola.map((c,i)=>{
     const lab={wait:'En espera',work:'Procesando…',done:'Guardado',fail:'Error'}[c.status];
     const errLine=(c.status==='fail'&&c.error)?`<div class="qerr">${c.error.replace(/</g,'&lt;').slice(0,200)}</div>`:'';
-    return `<div class="qitem"><div style="flex:1;min-width:0"><div class="nm">${c.file.name}</div>${errLine}</div>
+    return `<div class="qitem"><div style="flex:1;min-width:0"><div class="nm">${c.correoAdjId?'\u{1F4E7} ':''}${c.file.name}</div>${errLine}</div>
       <span class="st ${c.status}">${c.status==='work'?'<span class="spin dark"></span> ':''}${lab}</span></div>`;
   }).join('');
   document.getElementById('goBtn').disabled=!cola.some(c=>c.status==='wait');
   document.getElementById('clrBtn').style.display=cola.length?'inline-flex':'none';
 }
 function limpiarCola(){cola=[];renderQueue();}
-async function procesarCola(){
+async function procesarCola(auto){
   const pend=cola.filter(c=>c.status!=='done').length;
-  if(pend>=6){
+  if(pend>=6&&!auto){
     const mins=Math.ceil(pend*13/60);
     if(!confirm(`Vas a procesar ${pend} documentos. Para respetar el límite de la IA, la app los espacia y tardará unos ${mins} min. Puedes dejar la pestaña abierta. ¿Continuar?`))return;
   }
@@ -677,9 +726,9 @@ async function procesarCola(){
         c.error='Límite alcanzado, esperando 60s para reintentar…';renderQueue();
         await espera(60000);
         try{await procesarUno(c);c.status='done';ok++;}
-        catch(e2){c.status='fail';c.error=e2.message||String(e2);fail++;}
+        catch(e2){c.status='fail';c.error=e2.message||String(e2);fail++;marcarAdjuntoError(c);}
       }else{
-        c.status='fail';c.error=msg;fail++;console.error(err);
+        c.status='fail';c.error=msg;fail++;console.error(err);marcarAdjuntoError(c);
       }
     }
     renderQueue();
@@ -896,9 +945,13 @@ async function procesarUno(c){
   const doc=await sb('compras_doc',{method:'POST',body:JSON.stringify({
     tipo:docTipo,fecha:d.fecha||null,proveedor:d.proveedor||null,proveedor_nif:d.proveedor_nif||null,
     proveedor_id,num_documento:d.num_documento||null,canal,base:num(d.base),iva:num(d.iva),total,descuento:num(d.descuento),
-    estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,
+    estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,origen:c.correoAdjId?'correo':'manual',
     albaranes_detectados:esFactura?(d.albaranes||[]):null,raw:d})});
   const docId=doc[0].id;
+  // si el documento vino del correo, marcar su adjunto como procesado
+  if(c.correoAdjId){
+    sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'PROCESADO',doc_id:docId})}).catch(e=>console.warn('adjunto:',e.message));
+  }
   if(dupAviso)toast(`⚠️ Posible DUPLICADO: ${d.proveedor||''} ${d.num_documento||''}`,true);
 
   // 5) líneas de producto: SOLO para albaranes (las facturas no generan productos)
@@ -963,7 +1016,7 @@ function exportXlsx(){
 
 /* ---------- albaranes ---------- */
 async function loadAlbaranes(){
-  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,total,estado,estado_detalle,imagen_url,created_at&order=created_at.desc");renderAlb();renderConciliacion();}
+  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,total,estado,estado_detalle,imagen_url,origen,created_at&order=created_at.desc");renderAlb();renderConciliacion();}
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
 }
 function renderAlb(){
@@ -979,7 +1032,7 @@ function renderAlb(){
   document.getElementById('albTotal').textContent=fmt(albaranes.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyA').style.display=albaranes.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
-    <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
+    <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
@@ -998,7 +1051,7 @@ function exportAlb(){
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function loadFacturas(){
-  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,total,estado,estado_detalle,imagen_url,albaranes_detectados,created_at&order=created_at.desc");renderFac();renderConciliacion();}
+  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at&order=created_at.desc");renderFac();renderConciliacion();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
 }
 // Repasa TODOS los documentos del tipo y marca como DUPLICADO los que repiten
@@ -1106,7 +1159,7 @@ function renderFac(){
   document.getElementById('facTotal').textContent=fmt(facturas.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyF').style.display=facturas.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
-    <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.proveedor||''}</td><td>${a.num_documento||''}</td>
+    <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
