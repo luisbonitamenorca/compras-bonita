@@ -186,6 +186,20 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: true, ...resumen });
   } catch (e) {
     try { await client.logout(); } catch (_) {}
-    return res.status(500).json({ ok: false, error: String(e.message || e), ...resumen });
+    // detalle ampliado del error para diagnóstico
+    const partes = [];
+    if (e.authenticationFailed) partes.push("AUTENTICACIÓN RECHAZADA: revisa IMAP_USER e IMAP_PASS");
+    if (e.message) partes.push(e.message);
+    if (e.responseText) partes.push("Respuesta del servidor: " + e.responseText);
+    if (e.code) partes.push("Código: " + e.code);
+    if (e.serverResponseCode) partes.push("Server code: " + e.serverResponseCode);
+    return res.status(500).json({
+      ok: false,
+      error: partes.join(" · ") || String(e),
+      host_usado: host,
+      puerto_usado: port,
+      usuario_usado: user,
+      ...resumen,
+    });
   }
 }
