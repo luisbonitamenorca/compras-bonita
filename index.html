@@ -693,7 +693,8 @@ function comprimirImagen(file){
 function renderQueue(){
   const q=document.getElementById('queue');
   q.innerHTML=cola.map((c,i)=>{
-    const lab={wait:'En espera',work:'Procesando…',done:'Guardado',fail:'Error'}[c.status];
+    let lab={wait:'En espera',work:'Procesando…',done:'Guardado',fail:'Error'}[c.status];
+    if(c.status==='done'&&c.descartado)lab='Descartado · '+c.descartado.slice(0,60);
     const errLine=(c.status==='fail'&&c.error)?`<div class="qerr">${c.error.replace(/</g,'&lt;').slice(0,200)}</div>`:'';
     return `<div class="qitem"><div style="flex:1;min-width:0"><div class="nm">${c.correoAdjId?'\u{1F4E7} ':''}${c.file.name}</div>${errLine}</div>
       <span class="st ${c.status}">${c.status==='work'?'<span class="spin dark"></span> ':''}${lab}</span></div>`;
@@ -746,7 +747,7 @@ async function procesarCola(auto){
 }
 function espera(ms){return new Promise(r=>setTimeout(r,ms));}
 
-function construirPromptOCR(t){
+function construirPromptOCR(t,esCorreo){
   const reglasTxt=reglas.length?reglas.map(r=>'- '+r.texto).join('\n'):'(todavía sin reglas)';
   const conPautas=proveedores.filter(p=>p.pautas&&p.pautas.trim());
   const pautasTxt=conPautas.length
@@ -802,8 +803,11 @@ ${pautaFacTxt}`;
     prompt=`${comun}\n\nEste documento es un ALBARÁN.\n${instrAlbaran}\n\nDevuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:\n${formaAlbaran}`;
   }else{
     // AUTO: clasificar primero, y según el tipo colocar los datos en el campo correcto
+    const paso0=esCorreo?`
+PASO 0 — FILTRO (documento recibido por correo electrónico): en este buzón SOLO nos interesan FACTURAS y ALBARANES emitidos POR UN PROVEEDOR a Bonita Menorca / Binifadet. Si el documento es cualquier otra cosa — un listado o resumen de facturas, un extracto o estado de cuentas, publicidad, un presupuesto, un contrato, una carta, un justificante de pago, una imagen sin contenido comercial — NO extraigas nada y devuelve ÚNICAMENTE: {"tipo":"otro","motivo":"qué es, en pocas palabras"}. Si SÍ es una factura o albarán de proveedor, continúa con los pasos siguientes.
+`:'';
     prompt=`${comun}
-
+${paso0}
 PASO 1 — CLASIFICA el documento:
 - Es una FACTURA si su encabezado dice "FACTURA", tiene "Nº Factura", o si su cuerpo es una lista de albaranes (filas tipo "Albarán nº: XXXX Fecha: ...").
 - Es un ALBARÁN si es una nota de entrega con detalle de productos (artículos, cantidades, precios).
@@ -849,15 +853,23 @@ async function guardarLineasDoc(docId,dLineas,canal,proveedor_id,proveedorNombre
   if(lineas.length)await sb('compras_linea',{method:'POST',body:JSON.stringify(lineas)});
 }
 async function procesarUno(c){
-  const prompt=construirPromptOCR(tipo);
+  // los documentos de correo se clasifican siempre en modo auto y con el filtro anti-ruido
+  const tipoUsado=c.correoAdjId?'auto':tipo;
+  const prompt=construirPromptOCR(tipoUsado,!!c.correoAdjId);
   const block = c.mime==='application/pdf'
     ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
     : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}};
   const respuestaCruda=await callAI([block,{type:"text",text:prompt}]);
   const d=parseJson(respuestaCruda);
+  // documento de correo que NO es factura ni albarán: descartar sin guardar nada
+  if(c.correoAdjId && d.tipo==='otro'){
+    c.descartado=(d.motivo||'no es factura ni albarán').slice(0,200);
+    await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'DESCARTADO',error:c.descartado})}).catch(()=>{});
+    return;
+  }
   const canal=d.canal&&CENTROS.includes(d.canal)?d.canal:null;
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
-  const docTipo=(tipo==='auto')?(d.tipo||'factura'):tipo;
+  const docTipo=(tipoUsado==='auto')?(d.tipo||'factura'):tipoUsado;
 
   // RED DE SEGURIDAD: si es factura pero la IA metió los albaranes en "lineas"
   // (filas cuyo texto empieza por "Albarán"), los rescatamos al campo correcto.
