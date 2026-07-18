@@ -557,17 +557,31 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
+  console.log('Compras Bonita · ingesta correo v2 (18-jul-2026)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
-    // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias) de hace más de 1h
+    // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
+    // reclamados hace más de 1h, o de la época sin claimed_at
     const hace1h=new Date(Date.now()-3600e3).toISOString();
-    await sb(`compras_correo_adjunto?estado=eq.PROCESANDO&created_at=lt.${hace1h}`,{method:'PATCH',body:JSON.stringify({estado:'PENDIENTE'})}).catch(()=>{});
+    await sb(`compras_correo_adjunto?estado=eq.PROCESANDO&or=(claimed_at.lt.${hace1h},claimed_at.is.null)`,{method:'PATCH',body:JSON.stringify({estado:'PENDIENTE'})}).catch(()=>{});
+    // procesar por lotes hasta vaciar los pendientes (máx. 10 lotes por sesión)
+    for(let ciclo=0;ciclo<10;ciclo++){
+      const n=await cargarLoteCorreo();
+      if(!n)break;
+      renderQueue();
+      toast(`\u{1F4E7} ${n} documento${n>1?'s':''} recibido${n>1?'s':''} por correo · procesando…`);
+      await procesarCola(true);
+    }
+  }catch(err){console.warn('sincronizarCorreo:',err.message);}
+}
+// carga un lote de adjuntos PENDIENTES en la cola; devuelve cuántos ha reclamado
+async function cargarLoteCorreo(){
     const pend=await sb('compras_correo_adjunto?estado=eq.PENDIENTE&select=id,nombre_archivo,mime,url&order=created_at.asc&limit=20');
-    if(!pend.length)return;
+    if(!pend.length)return 0;
     let n=0;
     for(const a of pend){
       // reclamar el adjunto: si otro navegador lo cogió primero, el PATCH no devuelve fila
-      const claim=await sb(`compras_correo_adjunto?id=eq.${a.id}&estado=eq.PENDIENTE`,{method:'PATCH',body:JSON.stringify({estado:'PROCESANDO'})});
+      const claim=await sb(`compras_correo_adjunto?id=eq.${a.id}&estado=eq.PENDIENTE`,{method:'PATCH',body:JSON.stringify({estado:'PROCESANDO',claimed_at:new Date().toISOString()})});
       if(!claim.length)continue;
       try{
         const r=await fetch(a.url);
@@ -588,12 +602,7 @@ async function sincronizarCorreo(){
         await sb(`compras_correo_adjunto?id=eq.${a.id}`,{method:'PATCH',body:JSON.stringify({estado:'ERROR',error:(err.message||'').slice(0,300)})}).catch(()=>{});
       }
     }
-    if(n){
-      renderQueue();
-      toast(`\u{1F4E7} ${n} documento${n>1?'s':''} recibido${n>1?'s':''} por correo · procesando…`);
-      procesarCola(true);
-    }
-  }catch(err){console.warn('sincronizarCorreo:',err.message);}
+    return n;
 }
 function blobB64(blob){return new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(rd.result.split(',')[1]);rd.onerror=()=>rej(new Error('lectura'));rd.readAsDataURL(blob);});}
 function marcarAdjuntoError(c){
@@ -914,7 +923,15 @@ async function procesarUno(c){
   // ¿duplicado? buscar misma huella en lo ya guardado
   if(hashDoc){
     const dup=await sb(`compras_doc?hash_doc=eq.${encodeURIComponent(hashDoc)}&select=id&limit=1`);
-    if(dup.length){estadoDet='DUPLICADO';dupAviso=true;}
+    if(dup.length){
+      if(c.correoAdjId){
+        // documento de correo YA registrado antes: no crear otro doc, cerrar el adjunto y enlazarlo
+        await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',
+          body:JSON.stringify({estado:'PROCESADO',doc_id:dup[0].id,error:'ya registrado (mismo nº doc + fecha + importe)'})});
+        return;
+      }
+      estadoDet='DUPLICADO';dupAviso=true;
+    }
   }
   // ¿cuadra?
   const esFactura=(docTipo==='factura');
@@ -962,7 +979,17 @@ async function procesarUno(c){
   const docId=doc[0].id;
   // si el documento vino del correo, marcar su adjunto como procesado
   if(c.correoAdjId){
-    sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'PROCESADO',doc_id:docId})}).catch(e=>console.warn('adjunto:',e.message));
+    // CRÍTICO: si esto falla, el adjunto se reprocesaría en cada apertura. Reintento + aviso visible.
+    try{
+      await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'PROCESADO',doc_id:docId})});
+    }catch(e){
+      console.error('No se pudo marcar el adjunto '+c.correoAdjId+' como PROCESADO:',e.message);
+      try{
+        await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'PROCESADO'})});
+      }catch(e2){
+        toast('⚠️ Un adjunto de correo no se pudo marcar como procesado (ver consola)',true);
+      }
+    }
   }
   if(dupAviso)toast(`⚠️ Posible DUPLICADO: ${d.proveedor||''} ${d.num_documento||''}`,true);
 
