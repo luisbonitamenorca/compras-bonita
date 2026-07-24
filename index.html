@@ -53,9 +53,25 @@
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.5;min-height:100vh}
-  .wrap{max-width:1280px;margin:0 auto;padding:24px 16px 80px}
-  header.top{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:8px}
-  .brand{font-family:inherit;font-weight:600;font-size:22px;letter-spacing:-.3px}
+  /* ── Layout: barra lateral + columna principal ─────────── */
+  #app{display:flex;align-items:flex-start;min-height:100vh}
+
+  .side-nav{
+    width:200px;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto;
+    background:var(--panel);border-right:0.5px solid var(--line);
+    padding:18px 10px 18px 14px;display:flex;flex-direction:column}
+
+  .side-brand{padding:0 4px 14px;border-bottom:0.5px solid var(--line);margin-bottom:12px}
+  .side-foot{margin-top:auto;padding:12px 4px 0}
+
+  .main-col{flex:1;min-width:0;padding:0 16px 80px}
+  .main-inner{max-width:1280px;margin:0 auto}
+
+  .content{padding-top:24px}
+
+  .brand{font-family:inherit;font-weight:600;font-size:19px;letter-spacing:-.3px}
+  .side-brand .tag{font-size:11px;line-height:1.35;margin-top:2px;display:block}
+  .side-foot .cfgbtn{width:100%;justify-content:center;font-size:11px;padding:6px 8px}
   .brand .dot{color:var(--wine)}
   .tag{color:var(--muted);font-size:13px;letter-spacing:.3px}
   .cfgbtn{border:0.5px solid var(--line);background:var(--panel);color:var(--muted);padding:6px 12px;border-radius:7px;
@@ -64,12 +80,33 @@
   .cfgbtn .led{width:8px;height:8px;border-radius:50%;background:#cfc7b8}
   .cfgbtn .led.on{background:var(--ok)}
 
-  nav.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:18px 0 24px;flex-wrap:wrap}
-  nav.tabs button{font-family:inherit;font-size:13px;font-weight:500;color:var(--muted);background:none;border:none;
-    padding:9px 14px;cursor:pointer;position:relative;border-radius:6px 6px 0 0}
-  nav.tabs button:hover{color:var(--ink)}
-  nav.tabs button.active{color:var(--wine)}
-  nav.tabs button.active::after{content:'';position:absolute;left:12px;right:12px;bottom:-1px;height:2px;background:var(--wine)}
+  /* ── Menú vertical ─────────────────────────────────────── */
+  .tabs-nav{display:flex;flex-direction:column;gap:1px}
+  .tab-btn{
+    font-family:inherit;font-size:13px;color:var(--muted);background:none;border:none;
+    padding:8px 10px;cursor:pointer;text-align:left;width:100%;
+    border-left:3px solid transparent;border-radius:0 6px 6px 0;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    transition:color .15s,border-color .15s,background .15s}
+  .tab-btn:hover:not(.active){color:var(--ink);background:rgba(0,0,0,.04)}
+  .tab-btn.active{color:var(--wine);border-left-color:var(--wine);
+    background:rgba(29,158,117,.09);font-weight:500}
+  @media (prefers-color-scheme:dark){
+    .tab-btn:hover:not(.active){background:rgba(255,255,255,.06)}
+  }
+
+  /* Pantallas estrechas: el menú vuelve arriba en horizontal */
+  @media (max-width:900px){
+    #app{flex-direction:column}
+    .side-nav{position:static;width:100%;height:auto;border-right:none;
+      border-bottom:0.5px solid var(--line);padding:12px 12px 0}
+    .side-brand{border-bottom:none;padding-bottom:8px;margin-bottom:4px}
+    .side-foot{margin-top:8px;padding:0 0 10px}
+    .tabs-nav{flex-direction:row;flex-wrap:nowrap;overflow-x:auto;gap:2px;padding-bottom:6px}
+    .tab-btn{width:auto;border-left:none;border-bottom:2px solid transparent;border-radius:0}
+    .tab-btn.active{border-left:none;border-bottom-color:var(--wine);background:none}
+    .main-col{padding:0 12px 60px}
+  }
 
   .panel{background:var(--panel);border:0.5px solid var(--line);border-radius:var(--radius-lg);padding:18px;box-shadow:var(--shadow)}
   .view{display:none}.view.active{display:block}
@@ -213,27 +250,33 @@
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div id="app">
-    <header class="top">
-      <div>
-        <div class="brand">compras<span class="dot">.</span></div>
-        <div class="tag">Bonita Menorca · OCR de facturas y albaranes</div>
-      </div>
-      <button class="cfgbtn" onclick="resync()"><span id="led" class="led"></span> Conexión</button>
-    </header>
+<div id="app">
 
-    <nav class="tabs">
-      <button data-v="subir" class="active" onclick="tab('subir')">Subir</button>
-      <button data-v="compras" onclick="tab('compras')">Compras</button>
-      <button data-v="resumen" onclick="tab('resumen')">Resumen</button>
-      <button data-v="albaranes" onclick="tab('albaranes')">Albaranes</button>
-      <button data-v="facturas" onclick="tab('facturas')">Facturas</button>
-      <button data-v="conciliacion" onclick="tab('conciliacion')">Conciliación</button>
-      <button data-v="productos" onclick="tab('productos')">Productos</button>
-      <button data-v="proveedores" onclick="tab('proveedores')">Proveedores</button>
-      <button data-v="reglas" onclick="tab('reglas')">Reglas</button>
+  <!-- BARRA LATERAL -->
+  <aside class="side-nav">
+    <div class="side-brand">
+      <div class="brand">compras<span class="dot">.</span></div>
+      <div class="tag">Bonita Menorca · OCR de facturas y albaranes</div>
+    </div>
+    <nav class="tabs-nav">
+      <button class="tab-btn active" data-v="subir" onclick="tab('subir')">Subir</button>
+      <button class="tab-btn" data-v="compras" onclick="tab('compras')">Compras</button>
+      <button class="tab-btn" data-v="resumen" onclick="tab('resumen')">Resumen</button>
+      <button class="tab-btn" data-v="albaranes" onclick="tab('albaranes')">Albaranes</button>
+      <button class="tab-btn" data-v="facturas" onclick="tab('facturas')">Facturas</button>
+      <button class="tab-btn" data-v="conciliacion" onclick="tab('conciliacion')">Conciliación</button>
+      <button class="tab-btn" data-v="productos" onclick="tab('productos')">Productos</button>
+      <button class="tab-btn" data-v="proveedores" onclick="tab('proveedores')">Proveedores</button>
+      <button class="tab-btn" data-v="reglas" onclick="tab('reglas')">Reglas</button>
     </nav>
+    <div class="side-foot">
+      <button class="cfgbtn" onclick="resync()"><span id="led" class="led"></span> Conexión</button>
+    </div>
+  </aside>
+
+  <!-- COLUMNA PRINCIPAL -->
+  <div class="main-col"><div class="main-inner">
+    <main class="content">
 
     <!-- SUBIR -->
     <section id="v-subir" class="view active">
@@ -450,7 +493,8 @@
         </div>
       </div>
     </section>
-  </div>
+    </main>
+  </div></div>
 </div>
 
 <!-- MODAL REVISIÓN -->
@@ -2199,7 +2243,8 @@ async function delRule(id){try{await sb(`compras_regla?id=eq.${id}`,{method:'DEL
   reglas=reglas.filter(r=>r.id!==id);renderRules();toast('Regla eliminada');}catch(err){toast('Error: '+err.message,true);}}
 
 /* ---------- ui helpers ---------- */
-function tab(v){[...document.querySelectorAll('nav.tabs button')].forEach(b=>b.classList.toggle('active',b.dataset.v===v));
+function tab(v){[...document.querySelectorAll('.tab-btn')].forEach(b=>b.classList.toggle('active',b.dataset.v===v));
+  document.querySelector('.main-col').scrollTo?.(0,0);window.scrollTo(0,0);
   [...document.querySelectorAll('.view')].forEach(s=>s.classList.toggle('active',s.id==='v-'+v));
   if(v==='resumen')renderDashboard();
   if(v==='conciliacion')renderConciliacion();}
