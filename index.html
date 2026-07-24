@@ -949,12 +949,18 @@ async function procesarUno(c){
     proveedor_id=match.id;
   }else if(d.proveedor||d.proveedor_nif){
     // proveedor no reconocido: se crea pero NO autorizado, para que salte el aviso
+    // ¿lo conoce A3? entonces ya nace con su cuenta puesta
+    const a3=await cuentaA3(d.proveedor_nif,d.proveedor);
     const np=await sb('compras_proveedor',{method:'POST',body:JSON.stringify({
       nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,
-      nif_norm:normNif(d.proveedor_nif),nombre_norm:normName(d.proveedor),autorizado:false})});
+      nif_norm:normNif(d.proveedor_nif),nombre_norm:normName(d.proveedor),
+      cuenta_proveedor:a3?a3.cuenta:null,
+      cuenta_contable:a3?a3.contrapartida:null,
+      autorizado:false})});
     proveedor_id=np[0].id;
     // refrescar el array local para que el siguiente documento ya lo conozca
-    proveedores.push({id:np[0].id,nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,autorizado:false,_n:0});
+    proveedores.push({id:np[0].id,nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,
+      cuenta_proveedor:a3?a3.cuenta:null,cuenta_contable:a3?a3.contrapartida:null,autorizado:false,_n:0});
   }
 
   // 3) AUDITORÍA del documento
@@ -1800,11 +1806,43 @@ function renderDashboard(){
 }
 
 /* ---------- plan de cuentas de gasto + alta de proveedor ---------- */
-const CUENTAS=[{c:'600000000',n:'COMPRAS'},{c:'600000999',n:'TRANSPORTES SOBRE COMPRAS'},{c:'602000000',n:'OTROS APROVISIONAMIENTOS'},{c:'607000000',n:'TRABAJOS OTRAS EMPRESAS'},{c:'608000000',n:'ABONO SOBRE COMPRAS'},{c:'609000000',n:'RAPPELS'},{c:'621000000',n:'ALQUILER'},{c:'621000100',n:'RENTING'},{c:'622000000',n:'REPARACIONES Y CONSERVACION'},{c:'622000001',n:'MANTENIMIENTO INFORMATICO'},{c:'623000001',n:'GESTORIA'},{c:'623000002',n:'SERVICIO PREVENCION'},{c:'623000003',n:'MUTUA'},{c:'623000004',n:'LABORATORIO'},{c:'623000005',n:'ASESORAMIENTO TECNICO'},{c:'624000000',n:'TRANSPORTES'},{c:'625000000',n:'SEGUROS'},{c:'626000001',n:'COMISION IGT (AGORA PAYMENTS)'},{c:'626000002',n:'COMISION BANCARIA'},{c:'626000003',n:'COMISION STRIPE (SHOPIFY)'},{c:'626000004',n:'COMISION ISBA'},{c:'626000005',n:'COMISION CODETICKETS'},{c:'627000000',n:'MARKETING'},{c:'628000001',n:'ELECTRICIDAD'},{c:'628000002',n:'AGUA'},{c:'628000003',n:'GAS'},{c:'628000004',n:'CARBON'},{c:'628000005',n:'COMBUSTIBLE'},{c:'629000001',n:'GASTOS VARIOS'},{c:'629000002',n:'UNIFORMES'},{c:'629000003',n:'LIMPIEZA'},{c:'629000004',n:'SOFTWARE (AGORA, YUREST, SKELLO)'},{c:'629000005',n:'SEGURIDAD (EXTINTORES Y CAMARAS)'},{c:'629000006',n:'VAJILLA'},{c:'629000007',n:'GASTOS DE INVERSION'},{c:'678000000',n:'GASTOS NO DEDUCIBLES'}];
+const CUENTAS=[{c:'600000000',n:'COMPRAS'},{c:'600000100',n:'COMPRAS VINO'},{c:'600000101',n:'COMPRAS INTERNAS VINO'},{c:'600000200',n:'COMPRAS COMIDA'},{c:'600000201',n:'COMPRAS INTERNAS COMIDA'},{c:'600000300',n:'COMPRAS BEBIDAS'},{c:'600000400',n:'COMPRAS ALCOHOLES'},{c:'600000500',n:'COMPRAS VINO EXT'},{c:'600000600',n:'COMPRAS VISITAS'},{c:'600000700',n:'COMPRAS VARIOS'},{c:'600000999',n:'TRANSPORTES SOBRE COMPRAS'},{c:'602000000',n:'OTROS APROVISIONAMIENTOS'},{c:'606000000',n:'DESCUENTOS PRONTO PAGO, COMPRAS'},{c:'607000000',n:'TRABAJOS OTRAS EMPRESAS'},{c:'608000000',n:'ABONO SOBRE COMPRAS'},{c:'609000000',n:'RAPPELS'},{c:'621000000',n:'ALQUILER'},{c:'621000100',n:'RENTING'},{c:'622000000',n:'REPARACIONES Y CONSERVACION'},{c:'622000001',n:'MANTENIMIENTO INFORMATICO'},{c:'623000000',n:'SERVICIOS DE PROFESIONALES INDEPENDIENTES'},{c:'623000001',n:'GESTORIA'},{c:'623000002',n:'SERVICIO PREVENCION'},{c:'623000003',n:'MUTUA'},{c:'623000004',n:'LABORATORIO'},{c:'623000005',n:'ASESORAMIENTO TECNICO'},{c:'624000000',n:'TRANSPORTES'},{c:'625000000',n:'SEGUROS'},{c:'625000700',n:'PRIMA DE SEGUROS BODEGA'},{c:'625000800',n:'PRIMA DE SEGUROS ESTRUCTURA'},{c:'625000900',n:'SEGURO TAMARINDOS'},{c:'625001000',n:'PRIMA DE SEGUROS BAR TAMARINDOS'},{c:'626000000',n:'SERVICIOS BANCARIOS Y SIMILARES'},{c:'626000001',n:'COMISION IGT (AGORA PAYMENTS)'},{c:'626000002',n:'COMISION BANCARIA'},{c:'626000003',n:'COMISION STRIPE (SHOPIFY)'},{c:'626000004',n:'COMISION ISBA'},{c:'626000005',n:'COMISION CODETICKETS'},{c:'626000805',n:'COMISIONES Y GASTOS ISBA'},{c:'626000806',n:'COMISIONES Y GASTOS BANCARIOS CAJAMAR'},{c:'627000000',n:'MARKETING'},{c:'628000001',n:'ELECTRICIDAD'},{c:'628000002',n:'AGUA'},{c:'628000003',n:'GAS'},{c:'628000004',n:'CARBON'},{c:'628000005',n:'COMBUSTIBLE'},{c:'628000006',n:'TELEFONO'},{c:'629000001',n:'GASTOS VARIOS'},{c:'629000002',n:'UNIFORMES'},{c:'629000003',n:'LIMPIEZA'},{c:'629000004',n:'SOFTWARE (AGORA, YUREST, SKELLO)'},{c:'629000005',n:'SEGURIDAD (EXTINTORES Y CAMARAS)'},{c:'629000006',n:'VAJILLA'},{c:'629000007',n:'GASTOS DE INVERSION'},{c:'631000000',n:'TRIBUTOS'},{c:'631000001',n:'IBI'},{c:'631100000',n:'OTROS TRIBUTOS'},{c:'659000000',n:'OTRAS PERDIDAS EN GESTION CORRIENTE'},{c:'659000001',n:'DIFERENCIAS NEGATIVAS POR AJUSTES EN FACTURAS'},{c:'678000000',n:'GASTOS NO DEDUCIBLES'}];
 function selectCuenta(provId,actual){
   const ops=['<option value="">— sin cuenta —</option>'].concat(
     CUENTAS.map(c=>`<option value="${c.c}"${c.c===actual?' selected':''}>${c.c} — ${c.n}</option>`)).join('');
   return `<select class="selcuenta" onchange="saveCuenta('${provId}',this.value)" title="Cuenta contable de gasto (para exportar)">${ops}</select>`;
+}
+// ---- cuenta de proveedor (400/410) ----
+// Celda editable: si está vacía ofrece buscarla en el maestro de A3.
+function celdaCuentaProv(p){
+  const v=p.cuenta_proveedor||'';
+  const lupa=`<span class="link" style="font-size:11px;margin-left:4px" onclick="buscarCuentaProv('${p.id}')" title="Buscar en el maestro de A3">🔎</span>`;
+  return `<span class="editable" style="font-variant-numeric:tabular-nums" onblur="saveCuentaProv('${p.id}',this.textContent)" contenteditable>${v||'—'}</span>${v?'':lupa}`;
+}
+async function saveCuentaProv(id,val){
+  val=(val||'').replace(/[^0-9]/g,'');
+  if(val && !/^(40|41)\d{7}$/.test(val)){toast('La cuenta de proveedor debe empezar por 40 o 41 y tener 9 dígitos',true);loadProveedores();return;}
+  try{
+    await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({cuenta_proveedor:val||null})});
+    const p=proveedores.find(x=>x.id===id);if(p)p.cuenta_proveedor=val||null;
+    toast(val?'Cuenta de proveedor guardada':'Cuenta de proveedor quitada');
+  }catch(err){toast('Error: '+err.message,true);loadProveedores();}
+}
+// Consulta al maestro de A3 por NIF y, si no, por nombre.
+async function cuentaA3(nif,nombre){
+  try{
+    const r=await sb('rpc/buscar_cuenta_a3',{method:'POST',
+      body:JSON.stringify({p_nif:nif||null,p_nombre:nombre||null})});
+    return (r&&r.length)?r[0]:null;
+  }catch(err){console.warn('buscar_cuenta_a3:',err.message);return null;}
+}
+async function buscarCuentaProv(id){
+  const p=proveedores.find(x=>x.id===id);if(!p)return;
+  const hit=await cuentaA3(p.nif,p.nombre);
+  if(!hit){toast('No está en el maestro de A3. Escríbela a mano.',true);return;}
+  await saveCuentaProv(id,hit.cuenta);
+  renderProveedores();
+  toast(`${hit.cuenta} · ${hit.nombre} (por ${hit.via})`);
 }
 async function saveCuenta(id,val){
   try{
@@ -1949,7 +1987,7 @@ function exportConcil(){
 
 async function loadProveedores(){
   try{
-    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,cuenta_contable,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
+    proveedores=await sb('compras_proveedor?select=id,nombre,nif,categoria,cuenta_contable,cuenta_proveedor,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
     const docs=await sb('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
     proveedores.forEach(p=>p._n=cnt[p.id]||0);
@@ -1969,7 +2007,7 @@ function renderProv(){
     av.innerHTML=`⚠️ Hay ${nuevos.length} proveedor${nuevos.length>1?'es':''} nuevo${nuevos.length>1?'s':''} sin autorizar, detectado${nuevos.length>1?'s':''} al procesar documentos. Revísalos: corrige el nombre/CIF si hace falta y autorízalos.`;
   }else av.style.display='none';
   document.getElementById('headProv').innerHTML=
-    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','cat','Categoría')+'<th>Cuenta contable</th>'+
+    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','cat','Categoría')+'<th>Cuenta gasto</th><th>Cuenta proveedor</th>'+
     thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th><th>Muestras</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
   const tb=document.getElementById('provBody');
   document.getElementById('provCount').textContent=proveedores.length;
@@ -1980,6 +2018,7 @@ function renderProv(){
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','alias',this.textContent)" contenteditable>${p.alias||'—'}</span></td>
     <td><span class="editable" onblur="saveProv('${p.id}','categoria',this.textContent)" contenteditable>${p.categoria||'—'}</span></td>
     <td>${selectCuenta(p.id,p.cuenta_contable)}</td>
+    <td>${celdaCuentaProv(p)}</td>
     <td><span class="swi" onclick="toggleCritico('${p.id}')" title="Marcar crítico">${p.critico?'🔴':'⚪️'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pautas',this.textContent)" contenteditable>${p.pautas||'—'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pauta_factura',this.textContent)" contenteditable>${p.pauta_factura||'—'}</span></td>
@@ -2180,7 +2219,7 @@ function exportProv(){
   const keymap={nombre:p=>p.nombre,nif:p=>p.nif,cat:p=>p.categoria,crit:p=>p.critico?1:0,docs:p=>p._n};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(p=>({Nombre:p.nombre||'','CIF / NIF':p.nif||'',Categoría:p.categoria||'',
-    'Cuenta contable':p.cuenta_contable||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
+    'Cuenta gasto':p.cuenta_contable||'','Cuenta proveedor':p.cuenta_proveedor||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
   if(!data.length){toast('No hay proveedores que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Proveedores');
