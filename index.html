@@ -541,7 +541,31 @@
 
 <script>
 /* ---------- estado ---------- */
-const CENTROS = ["BODEGA","BINIFADET","TAMARINDOS","TAMARINDOS BAR","TIRANT","PRODUCCION","TIENDA","ESTRUCTURA"];
+const CENTROS = ["ESTRUCTURA","BINIFADET BODEGA","BINIFADET RESTAURANTE","BINIFADET TIENDA","TAMARINDOS RESTAURANTE","TAMARINDOS BAR","CASA TIRANT","COCINA PRODUCCION"];
+// Nomenclatura antigua -> nueva. Los proveedores están pasando a rotular los
+// documentos con los nombres de A3, pero no todos a la vez, así que durante la
+// transición hay que seguir entendiendo los nombres cortos. Debe coincidir con
+// la función canal_canonico() de Postgres.
+const CENTROS_ALIAS = {
+  'BODEGA':'BINIFADET BODEGA',
+  'BINIFADET':'BINIFADET RESTAURANTE',
+  'TIENDA':'BINIFADET TIENDA',
+  'TAMARINDOS':'TAMARINDOS RESTAURANTE',
+  'TIRANT':'CASA TIRANT',
+  'PRODUCCION':'COCINA PRODUCCION',
+  'PRODUCCIÓN':'COCINA PRODUCCION',
+  'BINIFADET COCINA':'COCINA PRODUCCION',
+  'COCINA':'COCINA PRODUCCION'
+};
+// Devuelve el nombre canónico del centro, o null si no se reconoce.
+// Nunca inventa: si no está en la lista ni en los alias, devuelve null para que
+// el documento salga marcado sin centro en vez de caer en uno equivocado.
+function canalCanonico(v){
+  if(!v)return null;
+  const k=String(v).trim().toUpperCase();
+  if(CENTROS.includes(k))return k;
+  return CENTROS_ALIAS[k]||null;
+}
 const SB_URL="https://qjfraquadsvtfwolfbkb.supabase.co";
 const SB_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFqZnJhcXVhZHN2dGZ3b2xmYmtiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAwNTYxNzIsImV4cCI6MjA5NTYzMjE3Mn0.3XidwXSbZPWKdlQD7vPOnqc96oY7sEVq7Bc74KF3okk";
 const BUCKET="documentos";
@@ -874,7 +898,11 @@ function construirPromptOCR(t,esCorreo){
     : '(sin alias registrados)';
   const comun=`Eres un OCR contable para un grupo de hostelería. Extrae los datos del documento adjunto.
 
-CENTROS DE COSTE válidos (canal): ${CENTROS.join(', ')}.
+CENTROS DE COSTE válidos (canal), devuélvelos EXACTAMENTE así: ${CENTROS.join(', ')}.
+
+Los proveedores están rotulando los documentos con esos nombres, así que normalmente lo verás escrito tal cual. Dos avisos:
+- CUIDADO con los que comparten prefijo. "BINIFADET" a secas puede ser la bodega, el restaurante o la tienda; "TAMARINDOS" a secas puede ser el restaurante o el bar. Si solo ves el nombre corto, decide por el contenido del documento (qué se compra y a quién): vino a granel o material de bodega apunta a BINIFADET BODEGA, corcho y embalaje también; producto de tienda a BINIFADET TIENDA; comida y bebida de servicio al restaurante correspondiente. Si no hay pista suficiente, devuelve canal:null. NO adivines: un centro equivocado ensucia el coste analítico y cuesta más de corregir que un hueco.
+- Nomenclatura antigua que algunos seguirán usando un tiempo, tradúcela: BODEGA→BINIFADET BODEGA, TIENDA→BINIFADET TIENDA, TIRANT→CASA TIRANT, PRODUCCION→COCINA PRODUCCION.
 
 REGLAS de clasificación que debes aplicar:
 ${reglasTxt}
@@ -1020,7 +1048,7 @@ async function procesarUno(c){
     await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'DESCARTADO',error:c.descartado})}).catch(()=>{});
     return;
   }
-  let canal=d.canal&&CENTROS.includes(d.canal)?d.canal:null;
+  let canal=canalCanonico(d.canal);
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
   const docTipo=(tipoUsado==='auto')?(d.tipo||'factura'):tipoUsado;
 
@@ -1065,8 +1093,8 @@ async function procesarUno(c){
 
   // 2b) si la IA no se ha atrevido con el centro de coste pero el proveedor
   //     tiene departamento fijo, lo usamos como respaldo
-  if(!canal && match && match.departamento && CENTROS.includes(match.departamento)){
-    canal=match.departamento;
+  if(!canal && match && match.departamento){
+    canal=canalCanonico(match.departamento);
   }
 
   // 3) AUDITORÍA del documento
