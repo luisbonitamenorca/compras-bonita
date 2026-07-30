@@ -826,8 +826,11 @@ function renderQueue(){
   q.innerHTML=cola.map((c,i)=>{
     let lab={wait:'En espera',work:'Procesando…',done:'Guardado',fail:'Error'}[c.status];
     if(c.status==='done'&&c.descartado)lab='Descartado · '+c.descartado.slice(0,60);
+    if(c.status==='done'&&c.duplicado)lab='Duplicado · no se ha vuelto a guardar';
     const errLine=(c.status==='fail'&&c.error)?`<div class="qerr">${c.error.replace(/</g,'&lt;').slice(0,200)}</div>`:'';
-    return `<div class="qitem"><div style="flex:1;min-width:0"><div class="nm">${c.correoAdjId?'\u{1F4E7} ':''}${c.file.name}</div>${errLine}</div>
+    // el rechazo NO es silencioso: se ve contra qué documento chocó
+    const dupLine=(c.status==='done'&&c.duplicado)?`<div class="qerr">${c.duplicado.replace(/</g,'&lt;')}</div>`:'';
+    return `<div class="qitem"><div style="flex:1;min-width:0"><div class="nm">${c.correoAdjId?'\u{1F4E7} ':''}${c.file.name}</div>${errLine}${dupLine}</div>
       <span class="st ${c.status}">${c.status==='work'?'<span class="spin dark"></span> ':''}${lab}</span></div>`;
   }).join('');
   document.getElementById('goBtn').disabled=!cola.some(c=>c.status==='wait');
@@ -847,7 +850,7 @@ async function procesarCola(auto){
   const GAP=13000; // ms entre documentos: respeta el límite de 5 peticiones/minuto con margen
   for(let i=0;i<pendientes.length;i++){
     const c=pendientes[i];
-    c.status='work';c.error=null;renderQueue();
+    c.status='work';c.error=null;c.duplicado=null;renderQueue();
     try{
       await procesarUno(c);
       c.status='done';ok++;
@@ -874,7 +877,13 @@ async function procesarCola(auto){
   }
   document.getElementById('goTxt').textContent='Procesar';
   await loadCompras();await loadAlbaranes();await loadFacturas();await loadProveedores();await loadProductos();
-  toast(`Listo · ${ok} guardadas${fail?`, ${fail} con error`:''}`);
+  const dups=cola.filter(c=>c.duplicado).length;
+  const desc=cola.filter(c=>c.descartado).length;
+  const guardadas=ok-dups-desc;
+  toast(`Listo · ${guardadas<0?0:guardadas} guardadas`
+    +`${dups?`, ${dups} rechazadas por duplicado`:''}`
+    +`${desc?`, ${desc} descartadas`:''}`
+    +`${fail?`, ${fail} con error`:''}`);
 }
 function espera(ms){return new Promise(r=>setTimeout(r,ms));}
 
@@ -924,7 +933,9 @@ El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del c
   const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
 "desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
-  const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
+  const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":null,"iva":null,"total":null,"descuento":0,
+"pagina":null,"paginas":null,
+"desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
   const instrFactura=`Una FACTURA agrupa varios ALBARANES (notas de entrega). NO extraigas productos como tales: tu salida es UNA fila por albarán.
 
@@ -943,7 +954,19 @@ DESGLOSE DE IVA — esto es importante para la contabilidad. Casi todas las fact
 
 PAUTAS DE FACTURA POR PROVEEDOR (si el proveedor de este documento coincide, sigue su pauta para localizar los albaranes):
 ${pautaFacTxt}`;
-  const instrAlbaran=`Un ALBARÁN lleva detalle de productos. Extrae en "lineas" cada producto: código, nombre, cantidad, precio_unit e importe.`;
+  const instrAlbaran=`Un ALBARÁN lleva detalle de productos. Extrae en "lineas" cada producto: código, nombre, cantidad, precio_unit e importe.
+
+EL NÚMERO DE ALBARÁN. Búscalo SIEMPRE en un campo etiquetado: "Núm.Albarán", "Nº albarán", "Albarán nº", "Nota de entrega nº", "NOTA ENTR." o la columna "NÚMERO" de la cabecera. Suele estar repetido al pie del documento.
+- NUNCA lo tomes de la columna de códigos de barras. Esa columna viene rotulada "CODI EAN", "CÓDIGO EAN" o "EAN" y contiene códigos de PRODUCTO de 12 a 14 dígitos, uno por línea. Un número que empieza por 5449, 0000 o 84 y tiene 13 dígitos es un código de barras, no un albarán.
+- Si dudas entre dos números, elige el que aparece UNA sola vez en cabecera o pie, no el que se repite línea a línea.
+
+LA FECHA. Coge la fecha del documento, el campo "DATA / FECHA" o "Fecha". NO cojas el vencimiento: "DATA VENT", "Fecha vto.", "Vencimiento" o "Fecha de pago" son otra cosa y suelen estar semanas después. Si ves dos fechas, la del documento es la más antigua.
+
+PÁGINAS. Muchos albaranes vienen en varios folios y lo indican con "PÀG/PÁG 1/2", "Pág. 2 de 3" o "Hoja 1/2". Si lo ves, devuelve "pagina" (el folio que estás mirando) y "paginas" (el total). Si no hay indicación de página, devuelve pagina:1 y paginas:1.
+- Si esta página NO trae el cuadro de totales, o el cuadro está vacío, o dice "Sigue...", "Continúa" o similar, devuelve base:null, iva:null y total:null. NO devuelvas 0: un cero es un dato falso y estropea la contabilidad. El nulo dice "en esta página no está" y se completa con la otra página.
+- Extrae las líneas de producto de ESTA página solamente. No inventes las de la otra.
+
+DESGLOSE DE IVA. Si esta página trae el cuadro de tipos ("IVA 10 %", "IVA 21 %" con su base y su cuota), extráelo en "desglose_iva" con "pct", "base" y "cuota", una entrada por tipo. Si no lo trae, devuelve "desglose_iva":[]. No lo inventes ni lo deduzcas dividiendo.`;
 
   if(t==='factura'){
     prompt=`${comun}\n\nEste documento es una FACTURA.\n${instrFactura}\n\nDevuelve ÚNICAMENTE un JSON válido, sin texto alrededor, con esta forma:\n${formaFactura}`;
@@ -1004,6 +1027,47 @@ async function guardarRepartoIva(docId,desglose,baseFactura){
       filas.map((f,i)=>({doc_id:docId,orden:i+1,base:f.base,cuota:f.cuota,tipo_iva:f.cod})))});
     return 'ok';
   }catch(e){console.warn('No pude guardar el reparto de IVA:',e.message);return 'error';}
+}
+// Normaliza un número de documento para comparar (igual que en Postgres).
+function normNumDoc(v){ return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
+
+// Un albarán físico puede llegar en varios folios. Si ya existe un albarán del
+// mismo proveedor con el mismo número, esta página se fusiona con él en lugar de
+// crear un documento nuevo. La fecha NO entra en la clave de agrupación porque
+// es justo el campo que el OCR confunde con el vencimiento.
+// Devuelve: {accion:'fusionado'|'duplicado'|'nuevo', docId, aviso}
+async function fusionarPaginaAlbaran(d,proveedor_id,pagina){
+  const nn=normNumDoc(d.num_documento);
+  if(!proveedor_id||!nn) return {accion:'nuevo'};
+  let hermanos;
+  try{
+    hermanos=await sb(`compras_doc?tipo=eq.albaran&proveedor_id=eq.${proveedor_id}`
+      +`&select=id,num_documento,fecha,base,iva,total,pagina,paginas,paginas_vistas&order=created_at.asc`);
+  }catch(e){ console.warn('No pude buscar páginas hermanas:',e.message); return {accion:'nuevo'}; }
+  const h=(hermanos||[]).find(x=>normNumDoc(x.num_documento)===nn);
+  if(!h) return {accion:'nuevo'};
+
+  const vistas=Array.isArray(h.paginas_vistas)&&h.paginas_vistas.length
+    ? h.paginas_vistas : [h.pagina||1];
+  if(vistas.includes(pagina)){
+    // esa página ya está absorbida: es una copia, no un folio nuevo
+    return {accion:'duplicado', docId:h.id};
+  }
+
+  // completar los totales SOLO donde falten: nunca sobrescribir un dato bueno con un nulo
+  const parche={paginas_vistas:[...vistas,pagina].sort((a,b)=>a-b)};
+  if(num(h.base) ==null && num(d.base) !=null) parche.base =num(d.base);
+  if(num(h.iva)  ==null && num(d.iva)  !=null) parche.iva  =num(d.iva);
+  if(num(h.total)==null && num(d.total)!=null) parche.total=num(d.total);
+  if(!h.paginas && num(d.paginas)) parche.paginas=num(d.paginas);
+
+  let aviso=null;
+  if(h.fecha && d.fecha){
+    const dias=Math.abs((new Date(h.fecha)-new Date(d.fecha))/86400000);
+    if(dias>7) aviso=`las dos páginas del albarán ${d.num_documento} llevan fechas separadas ${Math.round(dias)} días (${h.fecha} y ${d.fecha}); revisa cuál es la correcta`;
+  }
+  await sb(`compras_doc?id=eq.${h.id}`,{method:'PATCH',body:JSON.stringify(parche)});
+  return {accion:'fusionado', docId:h.id, aviso};
 }
 async function guardarLineasDoc(docId,dLineas,canal,proveedor_id,proveedorNombre){
   const lineas=[];
@@ -1097,17 +1161,55 @@ async function procesarUno(c){
     canal=canalCanonico(match.departamento);
   }
 
+  // 2c) ¿es un folio de un albarán que ya tenemos? Se comprueba ANTES que el
+  //     duplicado: una página 2 no es un documento nuevo ni una copia.
+  if(docTipo==='albaran'){
+    const pag=num(d.pagina)||1;
+    const fus=await fusionarPaginaAlbaran(d,proveedor_id,pag);
+    if(fus.accion==='fusionado'){
+      await guardarLineasDoc(fus.docId,d.lineas,canal,proveedor_id,d.proveedor);
+      if(c.correoAdjId){
+        const cierre={estado:'PROCESADO',doc_id:fus.docId,error:`página ${pag} unida al albarán ${d.num_documento}`};
+        try{ await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify(cierre)}); }
+        catch(e){ delete cierre.doc_id;
+          await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify(cierre)}).catch(()=>{}); }
+      }
+      toast(`Página ${pag}${num(d.paginas)?'/'+num(d.paginas):''} unida al albarán ${d.num_documento}`);
+      if(fus.aviso) toast('⚠️ '+fus.aviso,true);
+      return;
+    }
+    if(fus.accion==='duplicado'){
+      // esa misma página ya estaba absorbida: es una copia repetida
+      if(c.correoAdjId){
+        const cierre={estado:'PROCESADO',doc_id:fus.docId,error:`página ${pag} ya registrada del albarán ${d.num_documento}`};
+        try{ await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify(cierre)}); }
+        catch(e){ delete cierre.doc_id;
+          await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify(cierre)}).catch(()=>{}); }
+        return;
+      }
+      toast(`La página ${pag} del albarán ${d.num_documento} ya estaba registrada`,true);
+      return;
+    }
+  }
+
   // 3) AUDITORÍA del documento
   const total=num(d.total);
   // huella de duplicado: nº documento (normalizado) + fecha + importe.
   // NO usamos el proveedor: el OCR lo escribe distinto cada vez y rompía la detección.
   // El nº de albarán/factura ya es único de cada proveedor.
   const hashDoc=firmaDup(d.num_documento,d.fecha,total);
-  let estadoDet='CORRECTO', dupAviso=false;
+  let estadoDet='CORRECTO';
   // ¿duplicado? buscar misma huella en lo ya guardado
   if(hashDoc){
-    const dup=await sb(`compras_doc?hash_doc=eq.${encodeURIComponent(hashDoc)}&select=id&limit=1`);
+    // se pide el detalle del documento existente: si algún día hay un falso positivo,
+    // el aviso tiene que permitir verificarlo sin ir a buscarlo a mano.
+    const dup=await sb(`compras_doc?hash_doc=eq.${encodeURIComponent(hashDoc)}`
+      +`&select=id,proveedor,num_documento,fecha,total,tipo,created_at&limit=1`);
     if(dup.length){
+      const y=dup[0];
+      const cuando=(y.created_at||'').slice(0,16).replace('T',' ');
+      c.duplicado=`ya registrado: ${y.proveedor||'(sin proveedor)'} · nº ${y.num_documento||'?'}`
+        +` · ${y.fecha||'sin fecha'} · ${fmt(y.total)} · cargado el ${cuando}`;
       if(c.correoAdjId){
         // documento de correo YA registrado antes: no crear otro doc, cerrar el adjunto y enlazarlo.
         // CRÍTICO: si este PATCH lanza, el adjunto se queda en ERROR para siempre (ERROR no se
@@ -1123,7 +1225,12 @@ async function procesarUno(c){
         }
         return;
       }
-      estadoDet='DUPLICADO';dupAviso=true;
+      // CARGA MANUAL: antes se insertaba marcado como DUPLICADO. Ahora se rechaza.
+      // Insertarlo no aporta nada (el documento ya está dentro) y sí resta: infla el
+      // coste analítico y ahoga la bandeja de revisión con copias.
+      // OJO: esta comprobación va DESPUÉS de la de páginas a propósito. Si fuese antes,
+      // la página 2 de un albarán se rechazaría como copia y se perdería medio documento.
+      return;
     }
   }
   // ¿cuadra?
@@ -1168,6 +1275,10 @@ async function procesarUno(c){
     tipo:docTipo,fecha:d.fecha||null,proveedor:d.proveedor||null,proveedor_nif:d.proveedor_nif||null,
     proveedor_id,num_documento:d.num_documento||null,canal,base:num(d.base),iva:num(d.iva),total,descuento:num(d.descuento),
     estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,origen:c.correoAdjId?'correo':'manual',
+    // páginas: solo tiene sentido en albaranes. paginas_vistas arranca con esta.
+    pagina:!esFactura?(num(d.pagina)||1):null,
+    paginas:!esFactura?(num(d.paginas)||1):null,
+    paginas_vistas:!esFactura?[num(d.pagina)||1]:null,
     albaranes_detectados:esFactura?(d.albaranes||[]):null,raw:d})});
   const docId=doc[0].id;
   // si el documento vino del correo, marcar su adjunto como procesado
@@ -1184,7 +1295,6 @@ async function procesarUno(c){
       }
     }
   }
-  if(dupAviso)toast(`⚠️ Posible DUPLICADO: ${d.proveedor||''} ${d.num_documento||''}`,true);
 
   // 5) líneas de producto: SOLO para albaranes (las facturas no generan productos)
   if(!esFactura){
