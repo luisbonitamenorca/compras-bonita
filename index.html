@@ -754,11 +754,25 @@ async function sbUpload(file){
 }
 
 /* ---------- IA (Claude vía proxy) ---------- */
+// Última foto de la cuota que nos queda, leída de las cabeceras que devuelve la
+// API. Sirve para ajustar el ritmo con datos en vez de dormir un tiempo fijo.
+let _cuota={peticiones:null,tokensEntrada:null,reinicio:null,visto:0};
 async function callAI(content){
   const r=await fetch("/api/anthropic",{
     method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:4096,messages:[{role:"user",content}]})
   });
+  try{
+    const pet=r.headers.get('anthropic-ratelimit-requests-remaining');
+    const tin=r.headers.get('anthropic-ratelimit-input-tokens-remaining');
+    const res=r.headers.get('anthropic-ratelimit-input-tokens-reset')
+           || r.headers.get('anthropic-ratelimit-requests-reset');
+    if(pet!==null||tin!==null){
+      _cuota={peticiones:pet===null?null:Number(pet),
+              tokensEntrada:tin===null?null:Number(tin),
+              reinicio:res||null, visto:Date.now()};
+    }
+  }catch(e){/* si el proxy no reenvía cabeceras seguimos con el ritmo fijo */}
   const txt=await r.text();
   let data;
   try{data=JSON.parse(txt);}
@@ -847,7 +861,10 @@ async function procesarCola(auto){
   document.getElementById('goTxt').innerHTML='<span class="spin"></span> Procesando…';
   let ok=0,fail=0;
   const pendientes=cola.filter(c=>c.status!=='done');
-  const GAP=13000; // ms entre documentos: respeta el límite de 5 peticiones/minuto con margen
+  // ms entre documentos. El comentario original hablaba de 5 peticiones/minuto,
+  // pero el nivel de entrada de la API permite bastante más. Ajustable con
+  //   localStorage.setItem('gapOCR', 4000)   desde la consola del navegador.
+  const GAP=gapOCR();
   for(let i=0;i<pendientes.length;i++){
     const c=pendientes[i];
     c.status='work';c.error=null;c.duplicado=null;renderQueue();
@@ -856,8 +873,20 @@ async function procesarCola(auto){
       c.status='done';ok++;
     }catch(err){
       const msg=err.message||String(err);
+      // Proveedor borrado o fusionado mientras la pestaña llevaba rato abierta:
+      // la lista en memoria apunta a una ficha que ya no existe y Postgres
+      // rechaza la inserción con 23503. Recargar el maestro y reintentar una vez
+      // es exactamente lo que haría el usuario al refrescar la página.
+      if(/23503/.test(msg) && /compras_proveedor/.test(msg)){
+        c.error='Lista de proveedores desfasada, recargando y reintentando…';renderQueue();
+        try{
+          await loadProveedores();
+          await procesarUno(c);
+          c.status='done';ok++;
+        }catch(e2){c.status='fail';c.error=e2.message||String(e2);fail++;marcarAdjuntoError(c);}
+      }
       // si es rate limit, espera 60s y reintenta UNA vez
-      if(/rate limit|429/i.test(msg)){
+      else if(/rate limit|429/i.test(msg)){
         c.error='Límite alcanzado, esperando 60s para reintentar…';renderQueue();
         await espera(60000);
         try{await procesarUno(c);c.status='done';ok++;}
@@ -869,10 +898,17 @@ async function procesarCola(auto){
     renderQueue();
     // pausa entre documentos (no tras el último), con cuenta atrás visible
     if(i<pendientes.length-1){
-      for(let s=Math.round(GAP/1000);s>0;s--){
-        document.getElementById('goTxt').innerHTML=`<span class="spin"></span> Procesando… (siguiente en ${s}s)`;
-        await espera(1000);
-      }
+      // UNA sola espera, no trece encadenadas. La cuenta atrás se pinta con un
+      // intervalo aparte que da igual si el navegador lo frena: es solo cosmético.
+      const gap=esperaSegunCuota(GAP);
+      const fin=Date.now()+gap;
+      const pintar=setInterval(()=>{
+        const s=Math.max(0,Math.ceil((fin-Date.now())/1000));
+        const el=document.getElementById('goTxt');
+        if(el)el.innerHTML=`<span class="spin"></span> Procesando… (siguiente en ${s}s)`;
+      },500);
+      await espera(gap);
+      clearInterval(pintar);
     }
   }
   document.getElementById('goTxt').textContent='Procesar';
@@ -885,7 +921,64 @@ async function procesarCola(auto){
     +`${desc?`, ${desc} descartadas`:''}`
     +`${fail?`, ${fail} con error`:''}`);
 }
-function espera(ms){return new Promise(r=>setTimeout(r,ms));}
+// Chrome frena los setTimeout de las pestañas ocultas: tras 5 minutos sin verse,
+// y con 5 o más temporizadores encadenados, solo los revisa UNA VEZ POR MINUTO.
+// El bucle de cuenta atrás encadenaba trece esperas de 1s, justo el patrón que lo
+// dispara, y una pausa de 13s se convertía en minutos. Medido en producción:
+// mediana de 49s y picos de 479s cuando deberían ser 21s.
+// Los Web Workers corren en otro hilo y NO sufren ese frenado, así que el reloj
+// vive ahí dentro. Si el navegador no soporta workers, se usa setTimeout normal.
+// Hueco entre llamadas al OCR. Se lee de localStorage para poder afinarlo sin
+// tocar el código, con acceso protegido porque en incógnito o dentro de un
+// iframe restringido localStorage puede lanzar excepción.
+// Cuánto esperar antes de la siguiente llamada. Si la API nos ha dicho cuánta
+// cuota queda, se usa ese dato; si no (proxy antiguo, cabecera ausente), se cae
+// al hueco fijo. Nunca por debajo de 1s ni por encima de 60s.
+function esperaSegunCuota(gapBase){
+  const c=_cuota;
+  if(!c.visto || Date.now()-c.visto>120000) return gapBase;   // dato viejo: no fiarse
+  // si queda poco margen, frenar hasta que se reponga la ventana
+  const pocasPeticiones = c.peticiones!==null && c.peticiones<=2;
+  const pocosTokens     = c.tokensEntrada!==null && c.tokensEntrada<=6000;
+  if(pocasPeticiones||pocosTokens){
+    let hasta=0;
+    if(c.reinicio){const t=Date.parse(c.reinicio); if(!isNaN(t))hasta=t-Date.now();}
+    return Math.min(60000, Math.max(gapBase, hasta>0?hasta+1000:15000));
+  }
+  // margen de sobra: acelerar. Exige al menos UN dato real y generoso; que una
+  // cabecera falte no es prueba de que sobre cuota, así que no acelera a ciegas.
+  const petSobra = c.peticiones!==null && c.peticiones>20;
+  const tokSobra = c.tokensEntrada!==null && c.tokensEntrada>60000;
+  const petMal   = c.peticiones!==null && c.peticiones<=20;
+  const tokMal   = c.tokensEntrada!==null && c.tokensEntrada<=60000;
+  if((petSobra||tokSobra) && !petMal && !tokMal){
+    return Math.max(1000, Math.min(gapBase, 2000));
+  }
+  return gapBase;
+}
+function gapOCR(){
+  try{ const v=Number(localStorage.getItem('gapOCR')); if(v>=1000&&v<=60000) return v; }catch(e){}
+  return 4000;
+}
+let _relojWorker=null;
+function _iniciarReloj(){
+  if(_relojWorker!==null) return _relojWorker;
+  try{
+    const src='onmessage=function(e){setTimeout(function(){postMessage(e.data.id);},e.data.ms);}';
+    _relojWorker=new Worker(URL.createObjectURL(new Blob([src],{type:'application/javascript'})));
+    _relojWorker._pend=new Map();
+    _relojWorker.onmessage=ev=>{const f=_relojWorker._pend.get(ev.data);
+      if(f){_relojWorker._pend.delete(ev.data);f();}};
+  }catch(e){ console.warn('Sin Web Worker, las esperas se frenarán en segundo plano:',e.message);
+    _relojWorker=false; }
+  return _relojWorker;
+}
+function espera(ms){
+  const w=_iniciarReloj();
+  if(!w) return new Promise(r=>setTimeout(r,ms));
+  return new Promise(r=>{const id=Math.random().toString(36).slice(2);
+    w._pend.set(id,r); w.postMessage({id,ms});});
+}
 
 function construirPromptOCR(t,esCorreo){
   const reglasTxt=reglas.length?reglas.map(r=>'- '+r.texto).join('\n'):'(todavía sin reglas)';
@@ -1925,18 +2018,30 @@ async function reprocesarDoc(doc){
     }
   }
   const estadoSimple=(estadoDet==='CORRECTO')?(canal?'OK':'REVISAR'):'REVISAR';
-  await sb(`compras_doc?id=eq.${doc.id}`,{method:'PATCH',body:JSON.stringify({
+  const parche={
     fecha:fechaF,num_documento:numF,base,iva,total,descuento,
     estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,
-    albaranes_detectados:esFactura?(d.albaranes||[]):null,raw:d})});
+    albaranes_detectados:esFactura?(d.albaranes||[]):null,raw:d};
+  // el reproceso debe guardar TAMBIÉN lo que guarda el alta, o los campos nuevos
+  // se quedan a null y la fusión de páginas se queda sin datos con los que trabajar
+  if(!esFactura){
+    parche.pagina  = num(d.pagina)||1;
+    parche.paginas = num(d.paginas)||1;
+    parche.paginas_vistas = [num(d.pagina)||1];
+  }
+  await sb(`compras_doc?id=eq.${doc.id}`,{method:'PATCH',body:JSON.stringify(parche)});
   if(!esFactura){
     await sb(`compras_linea?doc_id=eq.${doc.id}`,{method:'DELETE'});
     await guardarLineasDoc(doc.id,d.lineas,canal,doc.proveedor_id||null,doc.proveedor||null);
+  }else{
+    // y el reparto de IVA: se rehace desde cero por si la lectura anterior era otra
+    await sb(`compras_doc_reparto?doc_id=eq.${doc.id}`,{method:'DELETE'}).catch(()=>{});
+    await guardarRepartoIva(doc.id,d.desglose_iva,num(base));
   }
   return {ok:true,estado:estadoDet};
 }
 async function ejecutarReproceso(docs,etiqueta){
-  const GAP=13000;let ok=0,fail=0,arreglados=0;
+  const GAP=gapOCR();let ok=0,fail=0,arreglados=0;
   for(let i=0;i<docs.length;i++){
     toast(`Releyendo ${i+1}/${docs.length}${etiqueta?' · '+etiqueta:''}…`);
     try{
