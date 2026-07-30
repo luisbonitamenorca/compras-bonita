@@ -1056,9 +1056,18 @@ async function procesarUno(c){
     const dup=await sb(`compras_doc?hash_doc=eq.${encodeURIComponent(hashDoc)}&select=id&limit=1`);
     if(dup.length){
       if(c.correoAdjId){
-        // documento de correo YA registrado antes: no crear otro doc, cerrar el adjunto y enlazarlo
-        await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',
-          body:JSON.stringify({estado:'PROCESADO',doc_id:dup[0].id,error:'ya registrado (mismo nº doc + fecha + importe)'})});
+        // documento de correo YA registrado antes: no crear otro doc, cerrar el adjunto y enlazarlo.
+        // CRÍTICO: si este PATCH lanza, el adjunto se queda en ERROR para siempre (ERROR no se
+        // reclama nunca). Cerrarlo sin enlace es peor que no cerrarlo, pero mucho mejor que
+        // dejarlo atascado, así que se reintenta sin doc_id.
+        const cierre={estado:'PROCESADO',doc_id:dup[0].id,error:'ya registrado (mismo nº doc + fecha + importe)'};
+        try{
+          await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify(cierre)});
+        }catch(e){
+          console.error('No pude enlazar el adjunto duplicado '+c.correoAdjId+':',e.message);
+          delete cierre.doc_id;
+          await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify(cierre)}).catch(()=>{});
+        }
         return;
       }
       estadoDet='DUPLICADO';dupAviso=true;
