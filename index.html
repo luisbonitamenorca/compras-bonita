@@ -265,6 +265,7 @@
       <button class="tab-btn" data-v="albaranes" onclick="tab('albaranes')">Albaranes</button>
       <button class="tab-btn" data-v="facturas" onclick="tab('facturas')">Facturas</button>
       <button class="tab-btn" data-v="conciliacion" onclick="tab('conciliacion')">Conciliación</button>
+      <button class="tab-btn" data-v="a3" onclick="tab('a3')">Exportar A3</button>
       <button class="tab-btn" data-v="productos" onclick="tab('productos')">Productos</button>
       <button class="tab-btn" data-v="proveedores" onclick="tab('proveedores')">Proveedores</button>
       <button class="tab-btn" data-v="reglas" onclick="tab('reglas')">Reglas</button>
@@ -425,6 +426,34 @@
         </div>
         <div id="emptyCon" class="empty" style="display:none">No hay albaranes detectados en las facturas todavía. Sube alguna factura con su lista de albaranes.</div>
         <p class="hint">Cada fila es un albarán que aparece dentro de una factura. «Falta» significa que ese albarán no está en tu listado de Albaranes: probablemente quede por entrar. El objetivo no es cuadrar el céntimo, sino que no se escape ningún albarán del coste analítico.</p>
+      </div>
+    </section>
+
+    <!-- EXPORTAR A3 -->
+    <section id="v-a3" class="view">
+      <div class="panel">
+        <div class="filters">
+          <div><label class="fld">Desde</label><input type="date" id="a3Desde"></div>
+          <div><label class="fld">Hasta</label><input type="date" id="a3Hasta"></div>
+          <div><label class="fld">Mostrar</label><select id="a3Filtro" onchange="renderA3()">
+            <option value="">Todas</option>
+            <option value="listas">Solo listas</option>
+            <option value="bloqueadas">Solo bloqueadas</option>
+          </select></div>
+          <div style="flex:1 1 auto;text-align:right;align-self:flex-end;display:flex;gap:10px;justify-content:flex-end">
+            <button class="btn ghost" onclick="renderA3()">↻ Previsualizar</button>
+            <button class="btn" onclick="exportarA3()">Generar Excel para A3</button>
+          </div>
+        </div>
+        <div id="a3Kpis" class="kpis"></div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr id="headA3"></tr></thead>
+            <tbody id="a3Body"></tbody>
+          </table>
+        </div>
+        <div id="emptyA3" class="empty" style="display:none">No hay facturas en ese rango de fechas.</div>
+        <p class="hint">Cada fila es una línea del fichero FACTURASCOMPRA de A3. Una factura con varios tipos de IVA o varios centros de coste genera varias líneas que comparten cabecera. Al generar el Excel se asigna el número interno correlativo (empieza en 2000 y no reinicia nunca); una factura ya numerada conserva su número si vuelves a exportar. Solo se exportan las facturas sin bloqueos.</p>
       </div>
     </section>
 
@@ -840,6 +869,7 @@ El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del c
 
   let prompt;
   const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
+"desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
   const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
 "lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
@@ -852,6 +882,11 @@ Cómo leer los albaranes:
 - Para cada albarán, SUMA los importes de todas sus líneas de producto y da ese total como "importe" del albarán. Si la cabecera ya trae un importe total, úsalo.
 
 Resultado: una fila por número de albarán distinto, con su fecha y su importe total (suma de su desglose). Extrae TODOS los albaranes. Si alguno no tiene importe, pon importe:null.
+
+DESGLOSE DE IVA — esto es importante para la contabilidad. Casi todas las facturas imprimen al pie un cuadro de IVA con una fila por tipo, del estilo "Base 10,00% 120,00 Cuota 12,00" y "Base 21,00% 80,00 Cuota 16,80". Extrae ese cuadro en "desglose_iva": una entrada por cada tipo, con "pct" (el porcentaje: 21, 10, 4 o 0), "base" (la base imponible de ese tipo) y "cuota" (el IVA de ese tipo).
+- Si la factura solo aplica un tipo de IVA, devuelve una sola entrada.
+- Si NO encuentras ese cuadro, devuelve "desglose_iva":[]. NO lo inventes y NO lo deduzcas dividiendo el IVA total: un desglose inventado corrompe el asiento contable, y vacío es preferible.
+- La suma de las bases del desglose debe coincidir con "base". Si no te cuadra, devuelve el desglose tal como está impreso y no lo ajustes tú.
 
 PAUTAS DE FACTURA POR PROVEEDOR (si el proveedor de este documento coincide, sigue su pauta para localizar los albaranes):
 ${pautaFacTxt}`;
@@ -883,6 +918,39 @@ ${formaFactura}
 ${formaAlbaran}`;
   }
   return prompt;
+}
+// Código de IVA de A3 a partir del porcentaje impreso en la factura.
+// Devuelve null si el porcentaje no es ninguno de los tipos españoles vigentes.
+function codIvaDePct(p){
+  const n=num(p); if(n==null)return null;
+  if(Math.abs(n-21)<=0.5)return 'ORD21';
+  if(Math.abs(n-10)<=0.5)return 'RED10';
+  if(Math.abs(n-4)<=0.5) return 'SRE';
+  if(Math.abs(n)<=0.3)   return 'EXE';
+  return null;
+}
+// Guarda el reparto contable de una factura (una línea por tipo de IVA).
+// Solo escribe cuando hay MÁS DE UN tipo: con uno solo no hace falta, porque la
+// vista de exportación sintetiza la línea única a partir de los totales.
+// centro_coste y cuenta_gasto se dejan a null a propósito: la vista los rellena
+// con el canal de la factura y la cuenta del proveedor. Solo se fijan aquí si
+// alguien reparte a mano por centro de coste.
+async function guardarRepartoIva(docId,desglose,baseFactura){
+  const filas=(desglose||[])
+    .map(x=>({cod:codIvaDePct(x.pct),base:num(x.base),cuota:num(x.cuota)}))
+    .filter(x=>x.cod&&x.base!=null&&x.base!==0);
+  if(filas.length<2)return null;
+  if(new Set(filas.map(f=>f.cod)).size<2)return null;
+  const suma=filas.reduce((a,f)=>a+f.base,0);
+  if(baseFactura==null||Math.abs(suma-baseFactura)>0.02){
+    console.warn(`Desglose de IVA descartado en ${docId}: las bases suman ${suma} y la factura dice ${baseFactura}`);
+    return 'descuadre';
+  }
+  try{
+    await sb('compras_doc_reparto',{method:'POST',body:JSON.stringify(
+      filas.map((f,i)=>({doc_id:docId,orden:i+1,base:f.base,cuota:f.cuota,tipo_iva:f.cod})))});
+    return 'ok';
+  }catch(e){console.warn('No pude guardar el reparto de IVA:',e.message);return 'error';}
 }
 async function guardarLineasDoc(docId,dLineas,canal,proveedor_id,proveedorNombre){
   const lineas=[];
@@ -1059,6 +1127,10 @@ async function procesarUno(c){
   // 5) líneas de producto: SOLO para albaranes (las facturas no generan productos)
   if(!esFactura){
     await guardarLineasDoc(docId,d.lineas,canal,proveedor_id,d.proveedor);
+  }else{
+    // 5b) factura con varios tipos de IVA: guardar el reparto contable para A3
+    const r=await guardarRepartoIva(docId,d.desglose_iva,num(d.base));
+    if(r==='descuadre')toast(`⚠️ ${d.proveedor||'Factura'} ${d.num_documento||''}: el desglose de IVA no cuadra con la base, hay que repartirlo a mano`,true);
   }
 }
 function num(x){if(x==null||x==='')return null;const n=parseFloat(String(x).replace(',','.'));return isNaN(n)?null:n;}
@@ -2308,12 +2380,100 @@ function addMsg(who,txt){const l=document.getElementById('chatlog');
 async function delRule(id){try{await sb(`compras_regla?id=eq.${id}`,{method:'DELETE'});
   reglas=reglas.filter(r=>r.id!==id);renderRules();toast('Regla eliminada');}catch(err){toast('Error: '+err.message,true);}}
 
+/* ---------- exportación a A3 ---------- */
+// Orden EXACTO de las 10 columnas de la plantilla FACTURASCOMPRA.
+// La fila 1 del Excel lleva los nombres técnicos que espera el cargador de A3.
+const A3_COLS=['cabFecha','cabnumdoc','cabfechacontable','CABREFERENCIA','cabcodpro',
+               'lindesclin','linprcmoneda','lintipiva','linctacon','lincentrocoste'];
+let a3Rows=[];
+function initA3(){
+  const h=document.getElementById('a3Hasta'), d=document.getElementById('a3Desde');
+  if(!h.value||!d.value){
+    const hoy=new Date(), ini=new Date(hoy.getFullYear(),hoy.getMonth(),1);
+    const iso=x=>x.toISOString().slice(0,10);
+    d.value=iso(ini); h.value=iso(hoy);
+  }
+}
+async function cargarA3(){
+  const desde=document.getElementById('a3Desde').value, hasta=document.getElementById('a3Hasta').value;
+  if(!desde||!hasta)return[];
+  // La previsualización lee la VISTA (no numera nada). Numerar es exclusivo del botón de generar.
+  return await sb(`compras_a3_export_preview?cabfecha=gte.${desde}&cabfecha=lte.${hasta}`
+    +`&select=doc_id,orden,cabfecha,cabnumdoc,cabreferencia,cabcodpro,lindesclin,linprcmoneda,lintipiva,linctacon,lincentrocoste,proveedor_nombre,bloqueos,reparto_explicito`
+    +`&order=cabfecha.asc,cabreferencia.asc,orden.asc`);
+}
+async function renderA3(){
+  try{a3Rows=await cargarA3();}
+  catch(err){toast('No pude cargar la previsualización: '+err.message,true);return;}
+  const f=document.getElementById('a3Filtro').value;
+  const bloqueada=r=>(r.bloqueos||[]).length>0;
+  let rows=a3Rows;
+  if(f==='listas')rows=rows.filter(r=>!bloqueada(r));
+  if(f==='bloqueadas')rows=rows.filter(bloqueada);
+
+  const docs=new Set(a3Rows.map(r=>r.doc_id));
+  const docsBloq=new Set(a3Rows.filter(bloqueada).map(r=>r.doc_id));
+  const nListas=docs.size-docsBloq.size;
+  // num() explícito: si el serializador devuelve los numeric como texto, sumar concatenaría.
+  const baseListas=a3Rows.filter(r=>!bloqueada(r)).reduce((s,r)=>s+(num(r.linprcmoneda)||0),0);
+  document.getElementById('a3Kpis').innerHTML=[
+    ['Facturas en el rango',docs.size],['Listas para exportar',nListas],
+    ['Con bloqueos',docsBloq.size],['Base de las listas',fmt(baseListas)]
+  ].map(([l,v])=>`<div class="kpi"><small>${l}</small><b>${v}</b></div>`).join('');
+
+  document.getElementById('headA3').innerHTML=
+    '<th>Fecha</th><th>Nº A3</th><th>Referencia</th><th>Proveedor</th><th>Cód.</th>'
+   +'<th class="num">Base</th><th>IVA</th><th>Cta. gasto</th><th>Centro</th><th>Estado</th>';
+  document.getElementById('emptyA3').style.display=rows.length?'none':'block';
+  document.getElementById('a3Body').innerHTML=rows.map(r=>{
+    const bl=(r.bloqueos||[]);
+    const estado=bl.length
+      ? `<span class="est nocuadra" title="${bl.join(' · ').replace(/"/g,'&quot;')}">🟠 ${bl.length===1?bl[0]:bl.length+' bloqueos'}</span>`
+      : '<span class="est correcto">🟢 Lista</span>';
+    return `<tr>
+      <td>${r.cabfecha||''}</td><td>${r.cabnumdoc??''}</td><td>${r.cabreferencia||''}</td>
+      <td>${(r.proveedor_nombre||'').slice(0,34)}${r.reparto_explicito?' <span style="color:var(--muted);font-size:11px">·reparto</span>':''}</td>
+      <td>${r.cabcodpro||''}</td>
+      <td class="num">${fmt(r.linprcmoneda)}</td><td>${r.lintipiva||''}</td>
+      <td>${r.linctacon||''}</td><td>${r.lincentrocoste??''}</td>
+      <td>${estado}</td></tr>`;}).join('');
+}
+async function exportarA3(){
+  const desde=document.getElementById('a3Desde').value, hasta=document.getElementById('a3Hasta').value;
+  if(!desde||!hasta){toast('Elige el rango de fechas',true);return;}
+  const pend=a3Rows.filter(r=>(r.bloqueos||[]).length>0);
+  const nOk=new Set(a3Rows.filter(r=>!(r.bloqueos||[]).length).map(r=>r.doc_id)).size;
+  if(!nOk){toast('No hay ninguna factura sin bloqueos en ese rango',true);return;}
+  const aviso=pend.length
+    ? `\n\nSe quedan fuera ${new Set(pend.map(r=>r.doc_id)).size} facturas con bloqueos.`
+    : '';
+  if(!confirm(`Se van a exportar ${nOk} facturas y se les asignará su número interno de A3, que ya no cambiará.${aviso}\n\n¿Continuar?`))return;
+  let rows;
+  try{
+    rows=await sb('rpc/exportar_a3',{method:'POST',
+      body:JSON.stringify({p_desde:desde,p_hasta:hasta,p_confirmar:true})});
+  }catch(err){toast('Error al exportar: '+err.message,true);return;}
+  if(!rows||!rows.length){toast('El servidor no devolvió ninguna línea',true);return;}
+  const data=rows.map(r=>({
+    cabFecha:r.cabfecha||'', cabnumdoc:r.cabnumdoc??'', cabfechacontable:r.cabfechacontable||'',
+    CABREFERENCIA:r.cabreferencia||'', cabcodpro:r.cabcodpro||'', lindesclin:r.lindesclin||'',
+    linprcmoneda:num(r.linprcmoneda)??'', lintipiva:r.lintipiva||'',
+    linctacon:r.linctacon||'', lincentrocoste:r.lincentrocoste??''}));
+  const ws=XLSX.utils.json_to_sheet(data,{header:A3_COLS});
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'FACTURASCOMPRA');
+  XLSX.writeFile(wb,`FACTURASCOMPRA_${desde}_${hasta}.xlsx`);
+  toast(`Exportadas ${new Set(rows.map(r=>r.cabnumdoc)).size} facturas · ${rows.length} líneas`);
+  renderA3();
+}
+
 /* ---------- ui helpers ---------- */
 function tab(v){[...document.querySelectorAll('.tab-btn')].forEach(b=>b.classList.toggle('active',b.dataset.v===v));
   document.querySelector('.main-col').scrollTo?.(0,0);window.scrollTo(0,0);
   [...document.querySelectorAll('.view')].forEach(s=>s.classList.toggle('active',s.id==='v-'+v));
   if(v==='resumen')renderDashboard();
-  if(v==='conciliacion')renderConciliacion();}
+  if(v==='conciliacion')renderConciliacion();
+  if(v==='a3'){initA3();renderA3();}}
 function fmt(n){if(n==null||n==='')return '';return Number(n).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';}
 function fmtCarga(ts){if(!ts)return '';const d=new Date(ts);if(isNaN(d))return '';const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} <span style="color:var(--muted);font-size:11px">${p(d.getHours())}:${p(d.getMinutes())}</span>`;}
 function estBadge(ed){
