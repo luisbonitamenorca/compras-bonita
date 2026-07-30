@@ -672,15 +672,40 @@ async function cargarLoteCorreo(){
         cola.push({file,b64,mime:mimeFinal,status:'wait',correoAdjId:a.id});
         n++;
       }catch(err){
-        await sb(`compras_correo_adjunto?id=eq.${a.id}`,{method:'PATCH',body:JSON.stringify({estado:'ERROR',error:(err.message||'').slice(0,300)})}).catch(()=>{});
+        const msg=(err.message||'').slice(0,300);
+        const cambio=esFalloTransitorio(msg)
+          ? {estado:'PENDIENTE',claimed_at:null,error:'reintentable: '+msg}
+          : {estado:'ERROR',error:msg};
+        await sb(`compras_correo_adjunto?id=eq.${a.id}`,{method:'PATCH',body:JSON.stringify(cambio)}).catch(()=>{});
       }
     }
     return n;
 }
 function blobB64(blob){return new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(rd.result.split(',')[1]);rd.onerror=()=>rej(new Error('lectura'));rd.readAsDataURL(blob);});}
+// ¿el fallo es culpa del documento o del entorno? Un error de saldo, un límite de
+// ritmo o una caída de red se arreglan solos con el tiempo; marcarlos ERROR es
+// tirar la factura al pozo, porque ERROR no se reintenta nunca. Esos vuelven a
+// PENDIENTE. Solo lo que fallará igual la próxima vez se queda en ERROR.
+function esFalloTransitorio(msg){
+  const m=String(msg||'').toLowerCase();
+  return m.includes('credit balance')      // saldo de API agotado
+      || m.includes('rate_limit')||m.includes('rate limit')
+      || m.includes('overloaded')||m.includes('529')
+      || m.includes('too many requests')||m.includes('429')
+      || m.includes('timeout')||m.includes('timed out')
+      || m.includes('failed to fetch')||m.includes('networkerror')
+      || m.includes('502')||m.includes('503')||m.includes('504');
+}
 function marcarAdjuntoError(c){
   if(!c.correoAdjId)return;
-  sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'ERROR',error:(c.error||'').slice(0,300)})}).catch(()=>{});
+  const msg=(c.error||'').slice(0,300);
+  const transitorio=esFalloTransitorio(msg);
+  // en transitorio se limpia claimed_at para que vuelva a la cola de inmediato,
+  // sin esperar la hora del rescate de claims caducados
+  const cambio=transitorio
+    ? {estado:'PENDIENTE',claimed_at:null,error:'reintentable: '+msg}
+    : {estado:'ERROR',error:msg};
+  sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify(cambio)}).catch(()=>{});
 }
 
 /* ---------- supabase REST ---------- */
