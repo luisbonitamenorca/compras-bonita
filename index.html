@@ -702,7 +702,7 @@ async function sincronizarCorreo(){
 }
 // carga un lote de adjuntos PENDIENTES en la cola; devuelve cuántos ha reclamado
 async function cargarLoteCorreo(){
-    const pend=await sb('compras_correo_adjunto?estado=eq.PENDIENTE&select=id,nombre_archivo,mime,url&order=created_at.asc&limit=20');
+    const pend=await sb('compras_correo_adjunto?estado=eq.PENDIENTE&select=id,nombre_archivo,mime,url,error&order=created_at.asc&limit=20');
     if(!pend.length)return 0;
     let n=0;
     for(const a of pend){
@@ -722,7 +722,19 @@ async function cargarLoteCorreo(){
         }else{
           b64=await blobB64(blob);
         }
-        cola.push({file,b64,mime:mimeFinal,status:'wait',correoAdjId:a.id});
+        // Un base64 de más de ~3 MB revienta el límite de cuerpo de la función de
+        // Vercel (FUNCTION_PAYLOAD_TOO_LARGE, HTTP 413) y el adjunto moría en ERROR
+        // sin remedio. Como el archivo ya está en el bucket con URL pública, en ese
+        // caso se manda la dirección y el modelo lo descarga él mismo.
+        //
+        // El segundo criterio evita un bucle: si este adjunto YA falló por tamaño,
+        // se fuerza la vía URL aunque el umbral diga que cabe. Sin esto, un archivo
+        // justo por debajo del límite se reintentaría igual una y otra vez.
+        const yaFalloPorTamano=esRecuperablePorUrl(a.error||'');
+        const pesado=(b64||'').length>3*1024*1024||yaFalloPorTamano;
+        if(pesado&&!a.url)throw new Error('demasiado grande y sin URL de descarga');
+        cola.push({file,b64:pesado?null:b64,mime:mimeFinal,status:'wait',
+                   correoAdjId:a.id,urlPublica:a.url});
         n++;
       }catch(err){
         const msg=(err.message||'').slice(0,300);
@@ -739,7 +751,15 @@ function blobB64(blob){return new Promise((res,rej)=>{const rd=new FileReader();
 // ritmo o una caída de red se arreglan solos con el tiempo; marcarlos ERROR es
 // tirar la factura al pozo, porque ERROR no se reintenta nunca. Esos vuelven a
 // PENDIENTE. Solo lo que fallará igual la próxima vez se queda en ERROR.
+// Un 413 no es transitorio en sí (reintentar el mismo envío falla igual), pero
+// SÍ es recuperable por otra vía: mandando la URL en vez del contenido. Por eso
+// vuelve a PENDIENTE, no a ERROR: la próxima pasada lo cogerá ya por URL.
+function esRecuperablePorUrl(msg){
+  const m=String(msg||'').toLowerCase();
+  return m.includes('payload_too_large')||m.includes('413')||m.includes('entity too large');
+}
 function esFalloTransitorio(msg){
+  if(esRecuperablePorUrl(msg))return true;
   const m=String(msg||'').toLowerCase();
   return m.includes('credit balance')      // saldo de API agotado
       || m.includes('rate_limit')||m.includes('rate limit')
@@ -1253,9 +1273,16 @@ async function procesarUno(c){
   // los documentos de correo se clasifican siempre en modo auto y con el filtro anti-ruido
   const tipoUsado=c.correoAdjId?'auto':tipo;
   const prompt=construirPromptOCR(tipoUsado,!!c.correoAdjId);
+  // Si no hay base64 (archivo demasiado grande para el proxy) se manda la URL
+  // pública del bucket: la API la descarga por su cuenta y el cuerpo de nuestra
+  // petición pasa de megas a unos cientos de bytes.
+  const porUrl = !c.b64 && c.urlPublica;
   const block = c.mime==='application/pdf'
-    ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
-    : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}};
+    ? (porUrl ? {type:"document",source:{type:"url",url:c.urlPublica}}
+              : {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}})
+    : (porUrl ? {type:"image",source:{type:"url",url:c.urlPublica}}
+              : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}});
+  if(!c.b64 && !c.urlPublica) throw new Error('el documento no tiene ni contenido ni URL de descarga');
   const respuestaCruda=await callAI([block,{type:"text",text:prompt}]);
   let d;
   try{ d=parseJson(respuestaCruda); }
