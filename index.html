@@ -686,7 +686,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v16 · por correo solo facturas (04-ago-2026 17:15)');
+  console.log('Compras Bonita · v17 · Excel A3 14 columnas con IRPF (04-ago-2026 17:45)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1146,14 +1146,15 @@ El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del c
 RETENCIÓN DE IRPF. Algunos proveedores autónomos (profesionales como gestorías, abogados, arquitectos, o arrendadores de locales) aplican una retención de IRPF que se RESTA del total. Aparece al pie con textos como "Retención IRPF 15%", "IRPF -15%", "Ret. 7%" o "Retención a cuenta", y su importe suele ir con signo negativo o entre paréntesis.
 - "retencion": el IMPORTE retenido SIEMPRE EN POSITIVO, aunque en el documento figure en negativo. Si no hay retención, pon 0.
 - "retencion_pct": el porcentaje aplicado (15, 7, 19, 2...). Si no viene el porcentaje impreso, pon null; NO lo calcules dividiendo.
+- "retencion_base": la base sobre la que se calcula la retención. ATENCIÓN: NO tiene por qué ser la base total de la factura. El cuadro del pie suele traer su propia fila de retención con su BASE, su % y su importe; usa ESA base. Es frecuente que la retención se aplique solo a una parte: por ejemplo en un agricultor, el 2% grava el producto al 4% de IVA pero NO el transporte al 21%. Si el cuadro no indica base de retención, pon null; no la deduzcas.
 - Comprobación: con retención, total = base + iva - retencion. Si esa resta no te cuadra con el total impreso, devuelve los importes TAL COMO ESTÁN impresos y no los ajustes.
 - No confundas la retención con un descuento comercial ni con el IVA. Si no ves ninguna mención explícita a IRPF o retención, pon retencion:0 y retencion_pct:null.`;
 
   let prompt;
-  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"retencion":0,"retencion_pct":null,"total":0,"descuento":0,
+  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"retencion":0,"retencion_pct":null,"retencion_base":null,"total":0,"descuento":0,
 "desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
-  const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":null,"iva":null,"retencion":0,"retencion_pct":null,"total":null,"descuento":0,
+  const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":null,"iva":null,"retencion":0,"retencion_pct":null,"retencion_base":null,"total":null,"descuento":0,
 "pagina":null,"paginas":null,
 "desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
@@ -1534,6 +1535,7 @@ async function procesarUno(c){
     // Retención siempre en positivo: aunque el documento la imprima en negativo,
     // el criterio de la base es "importe retenido" y el total ya la lleva restada.
     retencion:Math.abs(num(d.retencion)||0)||null, retencion_pct:num(d.retencion_pct),
+    retencion_base:num(d.retencion_base),
     estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,origen:c.correoAdjId?'correo':'manual',
     // páginas: solo tiene sentido en albaranes. paginas_vistas arranca con esta.
     pagina:!esFactura?(num(d.pagina)||1):null,
@@ -2893,7 +2895,12 @@ function fechaA3(iso){
   if(!a||!m||!d)return iso;          // si no es una fecha reconocible, se deja tal cual
   return Math.round((Date.UTC(a,m-1,d)-Date.UTC(1899,11,30))/86400000);
 }
+// ORDEN VERIFICADO contra la plantilla de A3 (lucia_facturas.xls): las dos
+// columnas de IRPF van en las posiciones 6 y 7, entre cabcodpro y linunidades.
+// Si se mueven, A3 lee el modelo de retención donde espera las unidades y la
+// importación entra mal SIN dar error.
 const A3_COLS=['cabFecha','cabnumdoc','cabfechacontable','CABREFERENCIA','cabcodpro',
+               'captipoirpf','capporirpf',
                'linunidades','lincodart',
                'lindesclin','linprcmoneda','lintipiva','linctacon','lincentrocoste'];
 let a3Rows=[];
@@ -2969,6 +2976,8 @@ async function exportarA3(){
   const data=rows.map(r=>({
     cabFecha:REGISTRO_A3, cabnumdoc:r.cabnumdoc??'', cabfechacontable:fechaA3(r.cabfechacontable),
     CABREFERENCIA:r.cabreferencia||'', cabcodpro:r.cabcodpro||'',
+    // Vacías cuando no hay retención: A3 no debe ver un modelo sin importe retenido.
+    captipoirpf:r.captipoirpf||'', capporirpf:num(r.capporirpf)??'',
     linunidades:A3_UNIDADES, lincodart:A3_CODART,
     lindesclin:r.lindesclin||'',
     linprcmoneda:num(r.linprcmoneda)??'', lintipiva:r.lintipiva||'',
