@@ -686,7 +686,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v14 · etiquetas base imponible (04-ago-2026 15:40)');
+  console.log('Compras Bonita · v16 · por correo solo facturas (04-ago-2026 17:15)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -795,6 +795,27 @@ async function sb(path,opts={}){
   });
   if(!r.ok){const t=await r.text();throw new Error(`Supabase ${r.status}: ${t}`);}
   const txt=await r.text(); return txt?JSON.parse(txt):[];
+}
+// Supabase corta las respuestas en 1.000 filas y NO avisa: simplemente devuelve
+// menos datos. Así, la pestaña Compras llevaba tiempo enseñando solo las 1.000
+// líneas más recientes (275 albaranes de 338) sin que nada lo indicara.
+// sbAll pide de mil en mil hasta que la página viene incompleta.
+async function sbAll(path,tam=1000,maxPaginas=50){
+  const filas=[]; const sep=path.includes('?')?'&':'?';
+  for(let i=0;i<maxPaginas;i++){
+    const desde=i*tam, hasta=desde+tam-1;
+    const r=await fetch(`${SB_URL}/rest/v1/${path}${sep}limit=${tam}&offset=${desde}`,{
+      headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,'Content-Type':'application/json',
+        Range:`${desde}-${hasta}`}
+    });
+    if(!r.ok){const t=await r.text();throw new Error(`Supabase ${r.status}: ${t}`);}
+    const txt=await r.text();
+    const lote=txt?JSON.parse(txt):[];
+    filas.push(...lote);
+    if(lote.length<tam)return filas;     // página incompleta = ya no hay más
+  }
+  console.warn(`sbAll: alcanzado el tope de ${maxPaginas} páginas en ${path}`);
+  return filas;
 }
 /* ---------- supabase storage ---------- */
 async function sbUpload(file){
@@ -1341,6 +1362,17 @@ async function procesarUno(c){
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
   const docTipo=(tipoUsado==='auto')?(d.tipo||'factura'):tipoUsado;
 
+  // Por correo SOLO entran facturas. Los albaranes se cargan a mano (foto o PDF),
+  // porque al buzón llegan albaranes que no son compras nuestras —los de Tenim
+  // Tot per al Vi, por ejemplo— y mezclarlos ensucia el análisis de coste.
+  // No se borra el adjunto: queda como DESCARTADO con el motivo, visible en Buzón.
+  if(c.correoAdjId && docTipo!=='factura'){
+    c.descartado=`albarán recibido por correo: no se carga (los albaranes entran solo por carga manual). Proveedor: ${d.proveedor||'?'}, nº ${d.num_documento||'?'}`;
+    await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',
+      body:JSON.stringify({estado:'DESCARTADO',error:c.descartado})}).catch(()=>{});
+    return;
+  }
+
   // RED DE SEGURIDAD: si es factura pero la IA metió los albaranes en "lineas"
   // (filas cuyo texto empieza por "Albarán"), los rescatamos al campo correcto.
   if(docTipo==='factura' && (!d.albaranes || !d.albaranes.length) && Array.isArray(d.lineas) && d.lineas.length){
@@ -1537,7 +1569,7 @@ function num(x){if(x==null||x==='')return null;const n=parseFloat(String(x).repl
 
 /* ---------- compras ---------- */
 async function loadCompras(){
-  try{compras=await sb('compras_linea?select=id,doc_id,id_producto,producto,cantidad,importe,canal,compras_doc(fecha,proveedor,tipo,num_documento,estado,estado_detalle)&order=created_at.desc');renderTable();renderDashboard();}
+  try{compras=await sbAll('compras_linea?select=id,doc_id,id_producto,producto,cantidad,importe,canal,compras_doc(fecha,proveedor,tipo,num_documento,estado,estado_detalle)&order=created_at.desc');renderTable();renderDashboard();}
   catch(err){toast('No pude cargar compras: '+err.message,true);}
 }
 function currentRows(){
@@ -1590,7 +1622,7 @@ function exportXlsx(){
 
 /* ---------- albaranes ---------- */
 async function loadAlbaranes(){
-  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,origen,created_at&order=created_at.desc");renderAlb();renderConciliacion();}
+  try{albaranes=await sbAll("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,origen,created_at&order=created_at.desc");renderAlb();renderConciliacion();}
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
 }
 function renderAlb(){
@@ -1625,7 +1657,7 @@ function exportAlb(){
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function loadFacturas(){
-  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at&order=created_at.desc");renderFac();renderConciliacion();}
+  try{facturas=await sbAll("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at&order=created_at.desc");renderFac();renderConciliacion();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
 }
 // Repasa TODOS los documentos del tipo y marca como DUPLICADO los que repiten
@@ -2535,7 +2567,7 @@ async function loadProveedores(){
   try{
     await cargarMaestroA3();
     proveedores=await sb('compras_proveedor?select=id,nombre,nif,departamento,cuenta_contable,cuenta_proveedor,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
-    const docs=await sb('compras_doc?select=proveedor_id');
+    const docs=await sbAll('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
     proveedores.forEach(p=>p._n=cnt[p.id]||0);
     renderProv();
