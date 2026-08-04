@@ -683,7 +683,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v6 · Excel A3 con 12 columnas (04-ago-2026 14:00)');
+  console.log('Compras Bonita · v7 · fechas A3 en dd-mm-aa (04-ago-2026 14:15)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2790,6 +2790,16 @@ async function delRule(id){try{await sb(`compras_regla?id=eq.${id}`,{method:'DEL
 // tal como aparecen en la plantilla de ejemplo del consultor.
 const A3_UNIDADES = 1;
 const A3_CODART   = 0;
+// A3 no entiende las fechas en ISO. En la plantilla que sí aceptó, cabFecha es
+// una FECHA REAL de Excel con formato dd-mm-yy, no un texto. Se replica eso:
+// se escribe un objeto Date y se le pone el formato a la celda.
+const A3_FMT_FECHA = 'dd\\-mm\\-yy';
+function fechaA3(iso){
+  if(!iso)return '';
+  const [a,m,d]=String(iso).slice(0,10).split('-').map(Number);
+  if(!a||!m||!d)return iso;          // si no es una fecha reconocible, se deja tal cual
+  return new Date(Date.UTC(a,m-1,d));
+}
 const A3_COLS=['cabFecha','cabnumdoc','cabfechacontable','CABREFERENCIA','cabcodpro',
                'linunidades','lincodart',
                'lindesclin','linprcmoneda','lintipiva','linctacon','lincentrocoste'];
@@ -2863,13 +2873,22 @@ async function exportarA3(){
   }catch(err){toast('Error al exportar: '+err.message,true);return;}
   if(!rows||!rows.length){toast('El servidor no devolvió ninguna línea',true);return;}
   const data=rows.map(r=>({
-    cabFecha:r.cabfecha||'', cabnumdoc:r.cabnumdoc??'', cabfechacontable:r.cabfechacontable||'',
+    cabFecha:fechaA3(r.cabfecha), cabnumdoc:r.cabnumdoc??'', cabfechacontable:fechaA3(r.cabfechacontable),
     CABREFERENCIA:r.cabreferencia||'', cabcodpro:r.cabcodpro||'',
     linunidades:A3_UNIDADES, lincodart:A3_CODART,
     lindesclin:r.lindesclin||'',
     linprcmoneda:num(r.linprcmoneda)??'', lintipiva:r.lintipiva||'',
     linctacon:r.linctacon||'', lincentrocoste:r.lincentrocoste??''}));
-  const ws=XLSX.utils.json_to_sheet(data,{header:A3_COLS});
+  const ws=XLSX.utils.json_to_sheet(data,{header:A3_COLS,cellDates:true});
+  // json_to_sheet crea la celda como fecha pero sin formato visible: hay que
+  // ponérselo a mano, columna A (cabFecha) y C (cabfechacontable).
+  for(let i=0;i<data.length;i++){
+    for(const col of ['A','C']){
+      const ref=col+(i+2);                 // +2: fila 1 es la cabecera
+      const cel=ws[ref];
+      if(cel&&cel.t==='d')cel.z=A3_FMT_FECHA;
+    }
+  }
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'FACTURASCOMPRA');
   XLSX.writeFile(wb,`FACTURASCOMPRA_${desde}_${hasta}.xlsx`);
