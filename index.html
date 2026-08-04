@@ -683,7 +683,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v5 · URL grandes + JSON truncado (04-ago-2026 13:40)');
+  console.log('Compras Bonita · v6 · Excel A3 con 12 columnas (04-ago-2026 14:00)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2781,9 +2781,17 @@ async function delRule(id){try{await sb(`compras_regla?id=eq.${id}`,{method:'DEL
   reglas=reglas.filter(r=>r.id!==id);renderRules();toast('Regla eliminada');}catch(err){toast('Error: '+err.message,true);}}
 
 /* ---------- exportación a A3 ---------- */
-// Orden EXACTO de las 10 columnas de la plantilla FACTURASCOMPRA.
+// Orden EXACTO de las 12 columnas de la plantilla FACTURASCOMPRA.
 // La fila 1 del Excel lleva los nombres técnicos que espera el cargador de A3.
+//
+// linunidades y lincodart son constantes de formato, no datos nuestros: A3 las
+// espera siempre con el mismo valor porque cada línea nuestra es un único
+// apunte contable, no una línea de artículo con cantidades. Van fijas a 1 y 0
+// tal como aparecen en la plantilla de ejemplo del consultor.
+const A3_UNIDADES = 1;
+const A3_CODART   = 0;
 const A3_COLS=['cabFecha','cabnumdoc','cabfechacontable','CABREFERENCIA','cabcodpro',
+               'linunidades','lincodart',
                'lindesclin','linprcmoneda','lintipiva','linctacon','lincentrocoste'];
 let a3Rows=[];
 function initA3(){
@@ -2856,7 +2864,9 @@ async function exportarA3(){
   if(!rows||!rows.length){toast('El servidor no devolvió ninguna línea',true);return;}
   const data=rows.map(r=>({
     cabFecha:r.cabfecha||'', cabnumdoc:r.cabnumdoc??'', cabfechacontable:r.cabfechacontable||'',
-    CABREFERENCIA:r.cabreferencia||'', cabcodpro:r.cabcodpro||'', lindesclin:r.lindesclin||'',
+    CABREFERENCIA:r.cabreferencia||'', cabcodpro:r.cabcodpro||'',
+    linunidades:A3_UNIDADES, lincodart:A3_CODART,
+    lindesclin:r.lindesclin||'',
     linprcmoneda:num(r.linprcmoneda)??'', lintipiva:r.lintipiva||'',
     linctacon:r.linctacon||'', lincentrocoste:r.lincentrocoste??''}));
   const ws=XLSX.utils.json_to_sheet(data,{header:A3_COLS});
