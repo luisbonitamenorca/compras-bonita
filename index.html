@@ -319,7 +319,7 @@
         <div class="barrow">
           <div style="display:flex;gap:24px;flex-wrap:wrap">
             <div class="total"><small>Albaranes</small><span id="cCount">0</span></div>
-            <div class="total"><small>Importe filtrado (sin IVA)</small><span id="tTotal">0,00 €</span></div>
+            <div class="total"><small>Base imponible (sin IVA)</small><span id="tTotal">0,00 €</span></div>
           </div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="loadCompras()">↻ Refrescar</button>
@@ -361,7 +361,7 @@
         <div class="barrow">
           <div style="display:flex;gap:24px;flex-wrap:wrap">
             <div class="total"><small>Albaranes registrados</small><span id="albCount">0</span></div>
-            <div class="total"><small>Importe (sin IVA)</small><span id="albTotal">0,00 €</span></div>
+            <div class="total"><small>Base imponible (sin IVA)</small><span id="albTotal">0,00 €</span></div>
           </div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="detectarDuplicados('albaran')">🔍 Detectar duplicados</button>
@@ -386,7 +386,7 @@
         <div class="barrow">
           <div style="display:flex;gap:24px;flex-wrap:wrap">
             <div class="total"><small>Facturas registradas</small><span id="facCount">0</span></div>
-            <div class="total"><small>Importe (sin IVA)</small><span id="facTotal">0,00 €</span></div>
+            <div class="total"><small>Base imponible (sin IVA)</small><span id="facTotal">0,00 €</span></div>
           </div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="limpiarLineasFacturas()">🧹 Limpiar detalle viejo</button>
@@ -686,7 +686,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v11 · codigo A3 proveedores + columna fecha (04-ago-2026 15:05)');
+  console.log('Compras Bonita · v14 · etiquetas base imponible (04-ago-2026 15:40)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1120,13 +1120,19 @@ ${deptoTxt}
 
 Asigna "canal" SOLO si una regla, el departamento habitual del proveedor o el propio documento lo permite con seguridad. Si no estás seguro, deja canal:null.
 El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet). Si el documento no muestra el CIF pero reconoces el proveedor por la tabla de equivalencias, usa el CIF de esa tabla.
-"base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).`;
+"base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).
+
+RETENCIÓN DE IRPF. Algunos proveedores autónomos (profesionales como gestorías, abogados, arquitectos, o arrendadores de locales) aplican una retención de IRPF que se RESTA del total. Aparece al pie con textos como "Retención IRPF 15%", "IRPF -15%", "Ret. 7%" o "Retención a cuenta", y su importe suele ir con signo negativo o entre paréntesis.
+- "retencion": el IMPORTE retenido SIEMPRE EN POSITIVO, aunque en el documento figure en negativo. Si no hay retención, pon 0.
+- "retencion_pct": el porcentaje aplicado (15, 7, 19, 2...). Si no viene el porcentaje impreso, pon null; NO lo calcules dividiendo.
+- Comprobación: con retención, total = base + iva - retencion. Si esa resta no te cuadra con el total impreso, devuelve los importes TAL COMO ESTÁN impresos y no los ajustes.
+- No confundas la retención con un descuento comercial ni con el IVA. Si no ves ninguna mención explícita a IRPF o retención, pon retencion:0 y retencion_pct:null.`;
 
   let prompt;
-  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"total":0,"descuento":0,
+  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"retencion":0,"retencion_pct":null,"total":0,"descuento":0,
 "desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
-  const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":null,"iva":null,"total":null,"descuento":0,
+  const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":null,"iva":null,"retencion":0,"retencion_pct":null,"total":null,"descuento":0,
 "pagina":null,"paginas":null,
 "desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "lineas":[{"id_producto":"","producto":"","cantidad":0,"precio_unit":0,"importe":0}]}`;
@@ -1493,6 +1499,9 @@ async function procesarUno(c){
   const doc=await sb('compras_doc',{method:'POST',body:JSON.stringify({
     tipo:docTipo,fecha:d.fecha||null,proveedor:d.proveedor||null,proveedor_nif:d.proveedor_nif||null,
     proveedor_id,num_documento:d.num_documento||null,canal,base:num(d.base),iva:num(d.iva),total,descuento:num(d.descuento),
+    // Retención siempre en positivo: aunque el documento la imprima en negativo,
+    // el criterio de la base es "importe retenido" y el total ya la lleva restada.
+    retencion:Math.abs(num(d.retencion)||0)||null, retencion_pct:num(d.retencion_pct),
     estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,origen:c.correoAdjId?'correo':'manual',
     // páginas: solo tiene sentido en albaranes. paginas_vistas arranca con esta.
     pagina:!esFactura?(num(d.pagina)||1):null,
@@ -1548,13 +1557,13 @@ function renderTable(){
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   // cabecera
   document.getElementById('headCompras').innerHTML=
-    thh('compras','fecha','Fecha')+thh('compras','prov','Proveedor')+thh('compras','cod','Cód.')+thh('compras','prod','Producto')+
+    thh('compras','fecha','Fecha','fecha')+thh('compras','prov','Proveedor')+thh('compras','cod','Cód.')+thh('compras','prod','Producto')+
     thh('compras','nalb','Nº albarán')+thh('compras','cant','Cant.','num')+thh('compras','imp','Importe','num')+
     thh('compras','canal','Centro')+'<th>Estado</th><th></th>';
   const tb=document.getElementById('tbody');
   document.getElementById('emptyC').style.display=rows.length?'none':'block';
   tb.innerHTML=rows.map(r=>{const dc=r.compras_doc||{};return `<tr>
-    <td>${dc.fecha||''}</td><td>${dc.proveedor||''}</td><td>${r.id_producto||''}</td><td>${r.producto||''}</td>
+    <td class="fecha">${dc.fecha||''}</td><td>${dc.proveedor||''}</td><td>${r.id_producto||''}</td><td>${r.producto||''}</td>
     <td>${dc.num_documento||''}</td>
     <td class="num">${r.cantidad??''}</td><td class="num">${fmt(r.importe)}</td>
     <td><span class="editable" onblur="saveCanal('${r.id}',this.textContent)" contenteditable>${r.canal||'—'}</span></td>
@@ -1581,24 +1590,24 @@ function exportXlsx(){
 
 /* ---------- albaranes ---------- */
 async function loadAlbaranes(){
-  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,total,estado,estado_detalle,imagen_url,origen,created_at&order=created_at.desc");renderAlb();renderConciliacion();}
+  try{albaranes=await sb("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,origen,created_at&order=created_at.desc");renderAlb();renderConciliacion();}
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
 }
 function renderAlb(){
   let rows=[...albaranes];
   const st=sortState.albaranes;
-  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headAlb').innerHTML=
     thh('albaranes','fecha','Fecha','fecha')+thh('albaranes','cargado','Cargado')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
-    thh('albaranes','centro','Centro')+thh('albaranes','total','Total','num')+thh('albaranes','estado','Estado')+'<th>Revisar</th><th></th>';
+    thh('albaranes','centro','Centro')+thh('albaranes','base','Base','num')+thh('albaranes','iva','IVA','num')+thh('albaranes','reten','Retención','num')+thh('albaranes','total','Total','num')+thh('albaranes','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('albBody');
   document.getElementById('albCount').textContent=albaranes.length;
   document.getElementById('albTotal').textContent=fmt(albaranes.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyA').style.display=albaranes.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
     <td class="fecha">${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
-    <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
+    <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.base)}</td><td class="num">${fmt(a.iva)}</td><td class="num">${a.retencion?'-'+fmt(a.retencion):''}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
@@ -1609,14 +1618,14 @@ function exportAlb(){
   const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº albarán':a.num_documento||'',
-    Centro:a.canal||'',Base:a.base??'',Estado:a.estado_detalle||'REVISAR'}));
+    Centro:a.canal||'',Base:a.base??'',IVA:a.iva??'','Retención':a.retencion??'','Total':a.total??'',Estado:a.estado_detalle||'REVISAR'}));
   if(!data.length){toast('No hay albaranes que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Albaranes');
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function loadFacturas(){
-  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at&order=created_at.desc");renderFac();renderConciliacion();}
+  try{facturas=await sb("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at&order=created_at.desc");renderFac();renderConciliacion();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
 }
 // Repasa TODOS los documentos del tipo y marca como DUPLICADO los que repiten
@@ -1714,18 +1723,18 @@ async function limpiarLineasFacturas(){
 function renderFac(){
   let rows=[...facturas];
   const st=sortState.facturas;
-  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headFac').innerHTML=
     thh('facturas','fecha','Fecha','fecha')+thh('facturas','cargado','Cargado')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
-    thh('facturas','centro','Centro')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+'<th>Revisar</th><th></th>';
+    thh('facturas','centro','Centro')+thh('facturas','base','Base','num')+thh('facturas','iva','IVA','num')+thh('facturas','reten','Retención','num')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('facBody');
   document.getElementById('facCount').textContent=facturas.length;
   document.getElementById('facTotal').textContent=fmt(facturas.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyF').style.display=facturas.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
     <td class="fecha">${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
-    <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
+    <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.base)}</td><td class="num">${fmt(a.iva)}</td><td class="num">${a.retencion?'-'+fmt(a.retencion):''}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
@@ -1745,7 +1754,7 @@ async function saveDocCanal(docId,val){
 function exportFac(){
   let rows=[...facturas];
   const st=sortState.facturas;
-  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº factura':a.num_documento||'',
     Centro:a.canal||'',Total:a.total??'',Estado:a.estado_detalle||'REVISAR'}));
