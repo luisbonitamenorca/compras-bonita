@@ -604,7 +604,7 @@ const BUCKET="documentos";
 let tipo="auto";
 let cola=[];               // [{file, b64, mime, status}]
 let compras=[], reglas=[], albaranes=[], proveedores=[], productos=[], facturas=[];
-let revisarDoc=null, revisarLineas=[], revisarAlbaranes=[];   // documento abierto en el modal de revisión
+let revisarDoc=null, revisarLineas=[], revisarAlbaranes=[], repartoFilas=[];   // documento abierto en el modal de revisión
 
 /* ---------- ordenación genérica de tablas ---------- */
 const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},facturas:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1},conciliacion:{key:null,dir:1}};
@@ -686,7 +686,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v17 · Excel A3 14 columnas con IRPF (04-ago-2026 17:45)');
+  console.log('Compras Bonita · v18 · reparto por centro de coste (04-ago-2026 18:15)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -816,6 +816,15 @@ async function sbAll(path,tam=1000,maxPaginas=50){
   }
   console.warn(`sbAll: alcanzado el tope de ${maxPaginas} páginas en ${path}`);
   return filas;
+}
+// Maestros para los desplegables del reparto. Se cargan una vez por sesión.
+let mCentros=[], mTiposIva=[];
+async function cargarMaestrosReparto(){
+  if(mCentros.length)return;
+  try{
+    mCentros=await sb('compras_centro_coste?select=codigo,canal&order=codigo.asc');
+    mTiposIva=await sb('compras_tipo_iva?select=codigo,descripcion&order=codigo.asc');
+  }catch(e){console.warn('No pude cargar maestros de reparto:',e.message);}
 }
 /* ---------- supabase storage ---------- */
 async function sbUpload(file){
@@ -1232,6 +1241,12 @@ function codIvaDePct(p){
 // centro_coste y cuenta_gasto se dejan a null a propósito: la vista los rellena
 // con el canal de la factura y la cuenta del proveedor. Solo se fijan aquí si
 // alguien reparte a mano por centro de coste.
+async function tieneRepartoManual(docId){
+  try{
+    const r=await sb(`compras_doc_reparto?doc_id=eq.${docId}&manual=is.true&select=id&limit=1`);
+    return r.length>0;
+  }catch(e){return false;}
+}
 async function guardarRepartoIva(docId,desglose,baseFactura){
   const filas=(desglose||[])
     .map(x=>({cod:codIvaDePct(x.pct),base:num(x.base),cuota:num(x.cuota)}))
@@ -1806,6 +1821,12 @@ async function revisar(docId){
   const lineas=(a.tipo==='factura')?[]:await sb(`compras_linea?doc_id=eq.${docId}&select=id,id_producto,producto,cantidad,precio_unit,importe&order=created_at.asc`);
   revisarLineas=lineas;
   revisarAlbaranes=(a.tipo==='factura'&&Array.isArray(a.albaranes_detectados))?a.albaranes_detectados.map(x=>({...x})):[];
+  if(a.tipo==='factura'){
+    await cargarMaestrosReparto();
+    try{
+      repartoFilas=await sb(`compras_doc_reparto?doc_id=eq.${docId}&select=id,orden,base,tipo_iva,centro_coste,cuenta_gasto,descripcion,manual&order=orden.asc`);
+    }catch(e){repartoFilas=[];}
+  }else repartoFilas=[];
   document.getElementById('mTitle').textContent=`${tituloTipo} · ${a.proveedor||''} ${a.num_documento?'· '+a.num_documento:''}`;
   // imagen
   const ic=document.getElementById('mImg');
@@ -1852,12 +1873,14 @@ function renderDetalle(){
       <div style="margin-top:8px"><span class="link" onclick="anadirAlb()">+ añadir albarán</span></div>
       ${(()=>{const c=cuadreAlbaranes(sumaAlb,a.base,a.total);return `<div class="aviso" id="avAlb" style="margin-top:12px;${c.ok===true?'background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)':(c.ok===null?'background:var(--paper);color:var(--muted)':'')}">${c.html}</div>`;})()}
       <p class="hint" style="margin-top:14px">Edita cualquier celda comparando con la foto. Útil para facturas con formatos difíciles. Al guardar se actualiza la lista.</p>
+      <div id="mReparto" style="margin-top:22px;border-top:1px solid var(--line);padding-top:16px"></div>
       <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
         <button class="btn" onclick="guardarAlbaranes()">Guardar cambios</button>
         <button class="btn ghost" onclick="reprocesarUnoModal()" title="Volver a leer con la IA aplicando las pautas del proveedor">↻ Reprocesar</button>
         <button class="btn ghost del-btn" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')">🗑 Borrar documento</button>
       </div>`;
     dc.querySelectorAll('.ce').forEach(el=>el.addEventListener('input',recalcAlb));
+    renderReparto();
     return;
   }
   // ===== ALBARÁN: tabla editable de productos =====
@@ -1918,6 +1941,109 @@ function recalcAviso(){
     av.style.background='var(--ok-soft)';av.style.borderColor='#bcd9c2';av.style.color='var(--ok)';
     av.innerHTML=`✓ Suma de líneas ${fmt(suma)} cuadra con la base`;
   }
+}
+/* ========== REPARTO POR CENTRO DE COSTE ==========
+   Una factura puede afectar a varios centros (una compra de vajilla que va mitad
+   a Tamarindos y mitad a Casa Tirant). La tabla compras_doc_reparto ya admitía
+   un centro POR LÍNEA y la vista de exportación lo respeta; solo faltaba poder
+   escribirlo. Cada línea del reparto sale como una fila del Excel de A3.
+   Se marca manual=true para que el reprocesado automático no lo borre.        */
+function selCentro(val,idx){
+  const op=mCentros.map(c=>`<option value="${c.codigo}" ${String(c.codigo)===String(val)?'selected':''}>${c.codigo} · ${esc(c.canal)}</option>`).join('');
+  return `<select onchange="setRep(${idx},'centro_coste',this.value)" style="font-size:12px;max-width:190px">
+            <option value="">— hereda el de la factura —</option>${op}</select>`;
+}
+function selIva(val,idx){
+  const op=mTiposIva.map(t=>`<option value="${t.codigo}" ${t.codigo===val?'selected':''}>${t.codigo}</option>`).join('');
+  return `<select onchange="setRep(${idx},'tipo_iva',this.value)" style="font-size:12px"><option value="">—</option>${op}</select>`;
+}
+function setRep(i,campo,val){
+  if(!repartoFilas[i])return;
+  repartoFilas[i][campo]=(campo==='base')?(val===''?null:Number(String(val).replace(',','.'))):(val||null);
+  repartoFilas[i]._tocada=true;
+  renderReparto();
+}
+function addRep(){
+  const base=num(revisarDoc.base)||0;
+  const yaSum=repartoFilas.filter(r=>!r._del).reduce((a,r)=>a+(num(r.base)||0),0);
+  repartoFilas.push({base:Math.round(Math.max(0,base-yaSum)*100)/100,tipo_iva:null,
+                     centro_coste:null,cuenta_gasto:null,descripcion:null,_new:true,_tocada:true});
+  renderReparto();
+}
+function delRep(i){ repartoFilas[i]._del=true; renderReparto(); }
+function renderReparto(){
+  const cont=document.getElementById('mReparto'); if(!cont)return;
+  const a=revisarDoc, base=num(a.base);
+  const vivas=repartoFilas.filter(r=>!r._del);
+  const suma=vivas.reduce((s,r)=>s+(num(r.base)||0),0);
+  const dif=(base!=null)?Math.round((base-suma)*100)/100:null;
+  const cuadra=(dif!=null&&Math.abs(dif)<=0.02);
+  const nCentros=new Set(vivas.map(r=>r.centro_coste).filter(Boolean)).size;
+
+  const cabecera=`<div style="font-weight:600;font-size:13px;margin-bottom:4px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Reparto por centro de coste</div>
+    <p class="hint" style="margin:0 0 10px">Cada línea será una fila del fichero de A3. Déjalo vacío si toda la factura va a un solo centro: entonces se usa el de arriba.</p>`;
+
+  if(!vivas.length){
+    cont.innerHTML=cabecera+`<div style="display:flex;gap:10px;align-items:center">
+      <span class="link" onclick="addRep()">+ repartir esta factura entre varios centros</span></div>`;
+    return;
+  }
+  const filas=repartoFilas.map((r,i)=>r._del?'':`<tr>
+     <td class="num" style="width:110px"><span contenteditable class="ce" data-rep="${i}">${r.base!=null?Number(r.base).toFixed(2):''}</span></td>
+     <td style="width:110px">${selIva(r.tipo_iva,i)}</td>
+     <td>${selCentro(r.centro_coste,i)}</td>
+     <td style="width:130px"><span contenteditable class="ce" data-repc="${i}" style="font-variant-numeric:tabular-nums">${r.cuenta_gasto||''}</span></td>
+     <td><span class="del" onclick="delRep(${i})" title="Quitar">🗑</span></td></tr>`).join('');
+
+  const avisoCuadre = cuadra
+    ? `<div class="aviso" style="margin-top:12px;background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)">✓ El reparto suma ${fmt(suma)} y cuadra con la base${nCentros>1?` · ${nCentros} centros`:''}</div>`
+    : `<div class="aviso" style="margin-top:12px">⚠️ El reparto suma ${fmt(suma)} y la base es ${fmt(base)} · ${dif>0?'faltan':'sobran'} ${fmt(Math.abs(dif))}. No se puede exportar a A3 hasta que cuadre.</div>`;
+
+  cont.innerHTML=cabecera+
+    `<table><thead><tr><th class="num">Importe</th><th>IVA</th><th>Centro de coste</th><th>Cuenta gasto</th><th></th></tr></thead>
+     <tbody>${filas}</tbody></table>
+     <div style="margin-top:8px;display:flex;gap:14px;flex-wrap:wrap">
+       <span class="link" onclick="addRep()">+ añadir línea</span>
+       <span class="link" onclick="repartirRestante()">repartir lo que falta en la última línea</span>
+     </div>${avisoCuadre}
+     <div style="margin-top:12px"><button class="btn" onclick="guardarReparto()">Guardar reparto</button></div>`;
+
+  cont.querySelectorAll('[data-rep]').forEach(el=>el.addEventListener('blur',()=>setRep(+el.dataset.rep,'base',el.textContent)));
+  cont.querySelectorAll('[data-repc]').forEach(el=>el.addEventListener('blur',()=>setRep(+el.dataset.repc,'cuenta_gasto',el.textContent.trim())));
+}
+function repartirRestante(){
+  const base=num(revisarDoc.base); if(base==null)return;
+  const vivas=repartoFilas.filter(r=>!r._del); if(!vivas.length)return;
+  const suma=vivas.reduce((s,r)=>s+(num(r.base)||0),0);
+  const ult=vivas[vivas.length-1];
+  ult.base=Math.round(((num(ult.base)||0)+(base-suma))*100)/100;
+  ult._tocada=true;
+  renderReparto();
+}
+async function guardarReparto(){
+  const a=revisarDoc, base=num(a.base);
+  const vivas=repartoFilas.filter(r=>!r._del);
+  const suma=vivas.reduce((s,r)=>s+(num(r.base)||0),0);
+  if(vivas.length && (base==null||Math.abs(base-suma)>0.02)){
+    toast('El reparto no cuadra con la base. Ajusta los importes antes de guardar.',true);return;
+  }
+  if(vivas.some(r=>!r.centro_coste)){
+    if(!confirm('Hay líneas sin centro de coste: heredarán el centro de la factura. ¿Guardar así?'))return;
+  }
+  try{
+    // Se rehace entero: es más simple y seguro que casar altas, bajas y cambios.
+    await sb(`compras_doc_reparto?doc_id=eq.${a.id}`,{method:'DELETE'});
+    if(vivas.length){
+      await sb('compras_doc_reparto',{method:'POST',body:JSON.stringify(
+        vivas.map((r,i)=>({doc_id:a.id,orden:i+1,base:num(r.base),tipo_iva:r.tipo_iva||null,
+          centro_coste:r.centro_coste?Number(r.centro_coste):null,
+          cuenta_gasto:r.cuenta_gasto||null,descripcion:r.descripcion||null,manual:true})))});
+    }
+    toast(vivas.length?`Reparto guardado: ${vivas.length} líneas`:'Reparto eliminado');
+    repartoFilas=await sb(`compras_doc_reparto?doc_id=eq.${a.id}&select=id,orden,base,tipo_iva,centro_coste,cuenta_gasto,descripcion,manual&order=orden.asc`);
+    renderReparto();
+    loadFacturas();
+  }catch(err){toast('No pude guardar el reparto: '+err.message,true);}
 }
 function borrarLinea(i){revisarLineas[i]._del=true;renderDetalle();}
 function anadirLinea(){revisarLineas.push({id_producto:'',producto:'',cantidad:null,precio_unit:null,importe:null,_new:true});renderDetalle();}
@@ -2203,9 +2329,13 @@ async function reprocesarDoc(doc){
     await sb(`compras_linea?doc_id=eq.${doc.id}`,{method:'DELETE'});
     await guardarLineasDoc(doc.id,d.lineas,canal,doc.proveedor_id||null,doc.proveedor||null);
   }else{
-    // y el reparto de IVA: se rehace desde cero por si la lectura anterior era otra
-    await sb(`compras_doc_reparto?doc_id=eq.${doc.id}`,{method:'DELETE'}).catch(()=>{});
-    await guardarRepartoIva(doc.id,d.desglose_iva,num(base));
+    // El reparto automático por IVA se rehace desde cero, pero el hecho A MANO
+    // por centro de coste NO se toca: es trabajo humano y la IA no lo puede rehacer.
+    const hayManual=await tieneRepartoManual(doc.id);
+    if(!hayManual){
+      await sb(`compras_doc_reparto?doc_id=eq.${doc.id}&manual=is.false`,{method:'DELETE'}).catch(()=>{});
+      await guardarRepartoIva(doc.id,d.desglose_iva,num(base));
+    }
   }
   return {ok:true,estado:estadoDet};
 }
