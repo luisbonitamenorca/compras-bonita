@@ -29,15 +29,26 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 
-export const config = { maxDuration: 60 };
-
 const SB_URL = "https://qjfraquadsvtfwolfbkb.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFqZnJhcXVhZHN2dGZ3b2xmYmtiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAwNTYxNzIsImV4cCI6MjA5NTYzMjE3Mn0.3XidwXSbZPWKdlQD7vPOnqc96oY7sEVq7Bc74KF3okk";
 const BUCKET = "documentos";
 
 const DIAS_ATRAS   = 60;  // ventana de DESCUBRIMIENTO (el procesado ya no depende de ella)
-const MAX_PROCESAR = 12;  // correos descargados por ejecución (esto sí es caro)
 const MAX_INTENTOS = 3;   // reintentos antes de dejar un correo en ERROR definitivo
+
+// El límite real no es un número de correos, es el tiempo: unos pesan 200 KB y
+// otros 15 MB. Un tope fijo o se queda corto en los días flojos o revienta por
+// timeout en los días de cierre de mes. Se procesa mientras quede presupuesto.
+//
+// 60 s es lo que permite cualquier plan de Vercel. Si el proyecto está en Pro,
+// pon INGESTA_SEGUNDOS_MAX=300 en las variables de entorno y esto se multiplica
+// por cinco sin tocar el código.
+const SEGUNDOS_MAX  = parseInt(process.env.INGESTA_SEGUNDOS_MAX || "60", 10);
+const MARGEN_MS     = Math.min(15000, SEGUNDOS_MAX * 1000 * 0.25); // colchón para cerrar limpio
+const PRESUPUESTO_MS = SEGUNDOS_MAX * 1000 - MARGEN_MS;
+const TECHO_CORREOS = 200;                         // freno de seguridad, no objetivo
+
+export const config = { maxDuration: SEGUNDOS_MAX };
 
 // Carpetas que no se inventarían. Enviados y borradores no son facturas recibidas;
 // la papelera se excluye porque borrar es una decisión humana que hay que respetar.
@@ -205,16 +216,22 @@ async function procesarCorreo(client, correo, resumen) {
   const buenos = todos.filter(esAdjuntoValido);
   const malos  = todos.filter((a) => !esAdjuntoValido(a));
 
-  const filas = [];
-  for (const a of buenos) {
+  // Las subidas son espera de red, no cálculo: en serie, un correo con 8 adjuntos
+  // tarda 8 veces lo que uno. En paralelo tarda casi lo mismo que el más lento.
+  const subidas = await Promise.all(buenos.map(async (a) => {
     const nombre = a.filename || "documento.pdf";
     const subida = await sbUploadBuffer(a.content, nombre, a.contentType);
+    return { nombre, subida, mime: a.contentType || null };
+  }));
+
+  const filas = [];
+  for (const s of subidas) {
     filas.push({
       correo_id: correo.id,
-      nombre_archivo: nombre,
-      mime: a.contentType || null,
-      url: subida.url,
-      storage_path: subida.path,
+      nombre_archivo: s.nombre,
+      mime: s.mime,
+      url: s.subida.url,
+      storage_path: s.subida.path,
       estado: "PENDIENTE",
       error: null,          // mismas claves que las filas de descarte: ver nota abajo
     });
@@ -260,7 +277,7 @@ async function procesarCorreo(client, correo, resumen) {
   });
 }
 
-async function procesar(client, resumen) {
+async function procesar(client, resumen, arranque) {
   // Reencolar lo que quedó a medias: ERROR con reintentos disponibles y
   // PROCESANDO abandonado (una ejecución que murió por timeout de Vercel).
   const hace1h = new Date(Date.now() - 3600 * 1000).toISOString();
@@ -273,7 +290,7 @@ async function procesar(client, resumen) {
 
   const pend = await sb(
     "compras_correo?estado=eq.DESCUBIERTO&select=id,message_id,uid,carpeta,asunto,intentos" +
-    `&order=fecha_correo.asc&limit=${MAX_PROCESAR}`
+    `&order=fecha_correo.asc&limit=${TECHO_CORREOS}`
   );
   resumen.lote = pend.length;
   if (!pend.length) return;
@@ -296,6 +313,10 @@ async function procesar(client, resumen) {
     }
     try {
       for (const correo of correos) {
+        // Se para antes de que Vercel corte la función. Lo que no dé tiempo sigue
+        // en DESCUBIERTO y lo coge la siguiente pasada: nada se queda a medias.
+        if (Date.now() - arranque > PRESUPUESTO_MS) { resumen.corte_por_tiempo = true; break; }
+
         // Reclamo optimista: si otra ejecución lo cogió antes, la respuesta viene vacía.
         const claim = await sb(`compras_correo?id=eq.${correo.id}&estado=eq.DESCUBIERTO`, {
           method: "PATCH",
@@ -345,8 +366,10 @@ export default async function handler(req, res) {
   const resumen = {
     revisados: 0, descubiertos: 0, procesados: 0, adjuntos: 0,
     rechazados: 0, sin_adjuntos: 0, lote: 0,
+    corte_por_tiempo: false, segundos: 0,
     carpetas: [], errores: [],
   };
+  const arranque = Date.now();
 
   const client = new ImapFlow({
     host, port,
@@ -358,8 +381,9 @@ export default async function handler(req, res) {
   try {
     await client.connect();
     await descubrir(client, resumen, excluirFinal);
-    await procesar(client, resumen);
+    await procesar(client, resumen, arranque);
     await client.logout();
+    resumen.segundos = Math.round((Date.now() - arranque) / 100) / 10;
 
     // Cuánto queda por leer: el dato que hacía falta para saber si vamos al día.
     let pendientes = null;
