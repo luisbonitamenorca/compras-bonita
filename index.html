@@ -683,7 +683,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v7 · fechas A3 en dd-mm-aa (04-ago-2026 14:15)');
+  console.log('Compras Bonita · v8 · Excel A3 en .xls 97-2004 (04-ago-2026 14:25)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2793,7 +2793,7 @@ const A3_CODART   = 0;
 // A3 no entiende las fechas en ISO. En la plantilla que sí aceptó, cabFecha es
 // una FECHA REAL de Excel con formato dd-mm-yy, no un texto. Se replica eso:
 // se escribe un objeto Date y se le pone el formato a la celda.
-const A3_FMT_FECHA = 'dd\\-mm\\-yy';
+const A3_FMT_FECHA = 'dd\\-mm\\-yy;@';   // idéntico al de la plantilla del consultor
 function fechaA3(iso){
   if(!iso)return '';
   const [a,m,d]=String(iso).slice(0,10).split('-').map(Number);
@@ -2891,7 +2891,9 @@ async function exportarA3(){
   }
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'FACTURASCOMPRA');
-  XLSX.writeFile(wb,`FACTURASCOMPRA_${desde}_${hasta}.xlsx`);
+  // A3 espera el formato antiguo .xls (BIFF8 / Excel 97-2004), no .xlsx.
+  // La plantilla que nos pasaron es un .xls, así que se genera igual.
+  XLSX.writeFile(wb,`FACTURASCOMPRA_${desde}_${hasta}.xls`,{bookType:'biff8'});
   toast(`Exportadas ${new Set(rows.map(r=>r.cabnumdoc)).size} facturas · ${rows.length} líneas`);
   renderA3();
 }
