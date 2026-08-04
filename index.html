@@ -482,7 +482,7 @@
           </table>
         </div>
         <div id="emptyA3" class="empty" style="display:none">No hay facturas en ese rango de fechas.</div>
-        <p class="hint">Cada fila es una línea del fichero FACTURASCOMPRA de A3. Una factura con varios tipos de IVA o varios centros de coste genera varias líneas que comparten cabecera. Al generar el Excel se asigna el número interno correlativo (empieza en 2000 y no reinicia nunca); una factura ya numerada conserva su número si vuelves a exportar. Solo se exportan las facturas sin bloqueos.</p>
+        <p class="hint">La primera columna del fichero (fecha de registro) lleva siempre la fecha de hoy; la fecha de la factura va en la tercera columna como fecha contable. El rango de fechas de arriba filtra por fecha de factura. Cada fila es una línea del fichero FACTURASCOMPRA de A3. Una factura con varios tipos de IVA o varios centros de coste genera varias líneas que comparten cabecera. Al generar el Excel se asigna el número interno correlativo (empieza en 2000 y no reinicia nunca); una factura ya numerada conserva su número si vuelves a exportar. Solo se exportan las facturas sin bloqueos.</p>
       </div>
     </section>
 
@@ -683,7 +683,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v8 · Excel A3 en .xls 97-2004 (04-ago-2026 14:25)');
+  console.log('Compras Bonita · v10 · fecha de registro = hoy (04-ago-2026 14:50)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2794,11 +2794,24 @@ const A3_CODART   = 0;
 // una FECHA REAL de Excel con formato dd-mm-yy, no un texto. Se replica eso:
 // se escribe un objeto Date y se le pone el formato a la celda.
 const A3_FMT_FECHA = 'dd\\-mm\\-yy;@';   // idéntico al de la plantilla del consultor
+// Devuelve el NÚMERO DE SERIE de Excel (días desde el 30-12-1899), no un objeto
+// Date. Con objetos Date la librería redondea mal: la primera carga salió con
+// "01:59:16" pegado a cada fecha (desfase de zona horaria) y construyéndola en
+// hora local llegaba a restar un día entero. Un entero calculado a mano no
+// tiene ese problema y da exactamente el mismo valor que la plantilla de A3.
+// Fecha de REGISTRO: el día en que se saca el listado, no la de la factura.
+// A3 usa la primera columna como fecha de registro y la tercera como contable.
+// Se calcula con los componentes locales (no con toISOString, que pasa a UTC y
+// a partir de las 22:00 de Menorca devolvería el día siguiente).
+function hoyA3(){
+  const h=new Date();
+  return Math.round((Date.UTC(h.getFullYear(),h.getMonth(),h.getDate())-Date.UTC(1899,11,30))/86400000);
+}
 function fechaA3(iso){
   if(!iso)return '';
   const [a,m,d]=String(iso).slice(0,10).split('-').map(Number);
   if(!a||!m||!d)return iso;          // si no es una fecha reconocible, se deja tal cual
-  return new Date(Date.UTC(a,m-1,d));
+  return Math.round((Date.UTC(a,m-1,d)-Date.UTC(1899,11,30))/86400000);
 }
 const A3_COLS=['cabFecha','cabnumdoc','cabfechacontable','CABREFERENCIA','cabcodpro',
                'linunidades','lincodart',
@@ -2872,21 +2885,23 @@ async function exportarA3(){
       body:JSON.stringify({p_desde:desde,p_hasta:hasta,p_confirmar:true})});
   }catch(err){toast('Error al exportar: '+err.message,true);return;}
   if(!rows||!rows.length){toast('El servidor no devolvió ninguna línea',true);return;}
+  const REGISTRO_A3=hoyA3();   // el mismo valor para todas las filas del fichero
   const data=rows.map(r=>({
-    cabFecha:fechaA3(r.cabfecha), cabnumdoc:r.cabnumdoc??'', cabfechacontable:fechaA3(r.cabfechacontable),
+    cabFecha:REGISTRO_A3, cabnumdoc:r.cabnumdoc??'', cabfechacontable:fechaA3(r.cabfechacontable),
     CABREFERENCIA:r.cabreferencia||'', cabcodpro:r.cabcodpro||'',
     linunidades:A3_UNIDADES, lincodart:A3_CODART,
     lindesclin:r.lindesclin||'',
     linprcmoneda:num(r.linprcmoneda)??'', lintipiva:r.lintipiva||'',
     linctacon:r.linctacon||'', lincentrocoste:r.lincentrocoste??''}));
-  const ws=XLSX.utils.json_to_sheet(data,{header:A3_COLS,cellDates:true});
+  const ws=XLSX.utils.json_to_sheet(data,{header:A3_COLS});
   // json_to_sheet crea la celda como fecha pero sin formato visible: hay que
   // ponérselo a mano, columna A (cabFecha) y C (cabfechacontable).
   for(let i=0;i<data.length;i++){
     for(const col of ['A','C']){
       const ref=col+(i+2);                 // +2: fila 1 es la cabecera
       const cel=ws[ref];
-      if(cel&&cel.t==='d')cel.z=A3_FMT_FECHA;
+      // Es un número: el formato es lo que le dice a Excel y a A3 que es fecha.
+      if(cel&&cel.t==='n')cel.z=A3_FMT_FECHA;
     }
   }
   const wb=XLSX.utils.book_new();
