@@ -41,8 +41,14 @@ const MAX_INTENTOS = 3;   // reintentos antes de dejar un correo en ERROR defini
 
 // Carpetas que no se inventarían. Enviados y borradores no son facturas recibidas;
 // la papelera se excluye porque borrar es una decisión humana que hay que respetar.
+// Los nombres largos ("elementos enviados") van enteros porque no son un segmento
+// de ruta sino el nombre completo de la carpeta: así los llama el servidor real.
 const EXCLUIR_POR_DEFECTO = ["trash", "papelera", "deleted", "drafts", "borradores",
-                             "sent", "enviados", "junk", "spam", "correo no deseado"];
+                             "sent", "enviados", "junk", "spam", "correo no deseado",
+                             "elementos enviados", "elementos eliminados",
+                             "elementos borrados", "elementos guardados",
+                             "sent items", "deleted items", "bandeja de salida",
+                             "outbox", "archive", "archivo"];
 
 const MIMES_OK = ["application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic"];
 const EXT_OK   = ["pdf", "jpg", "jpeg", "png", "webp", "heic"];
@@ -210,6 +216,7 @@ async function procesarCorreo(client, correo, resumen) {
       url: subida.url,
       storage_path: subida.path,
       estado: "PENDIENTE",
+      error: null,          // mismas claves que las filas de descarte: ver nota abajo
     });
   }
   // Los rechazados se registran igualmente, con el motivo. Un zip o un XML de
@@ -225,6 +232,10 @@ async function procesarCorreo(client, correo, resumen) {
       error: `tipo de adjunto no admitido: ${a.contentType || "desconocido"}`,
     });
   }
+  // OJO: en un insert por lotes PostgREST exige que TODOS los objetos tengan
+  // exactamente las mismas claves, o responde PGRST102 "All object keys must
+  // match" y se pierde el correo entero. Por eso las filas buenas llevan
+  // error:null explícito aunque no lo necesiten.
   if (filas.length) {
     await sb("compras_correo_adjunto", { method: "POST", body: JSON.stringify(filas) });
   }
@@ -264,7 +275,7 @@ async function procesar(client, resumen) {
     "compras_correo?estado=eq.DESCUBIERTO&select=id,message_id,uid,carpeta,asunto,intentos" +
     `&order=fecha_correo.asc&limit=${MAX_PROCESAR}`
   );
-  resumen.pendientes_al_empezar = pend.length;
+  resumen.lote = pend.length;
   if (!pend.length) return;
 
   // Agrupar por carpeta para abrir cada buzón una sola vez.
@@ -333,7 +344,7 @@ export default async function handler(req, res) {
 
   const resumen = {
     revisados: 0, descubiertos: 0, procesados: 0, adjuntos: 0,
-    rechazados: 0, sin_adjuntos: 0, pendientes_al_empezar: 0,
+    rechazados: 0, sin_adjuntos: 0, lote: 0,
     carpetas: [], errores: [],
   };
 
