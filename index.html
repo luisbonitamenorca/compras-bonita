@@ -683,7 +683,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · buzón v3 + parseJson robusto (04-ago-2026)');
+  console.log('Compras Bonita · v5 · URL grandes + JSON truncado (04-ago-2026 13:40)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -756,10 +756,12 @@ function blobB64(blob){return new Promise((res,rej)=>{const rd=new FileReader();
 // vuelve a PENDIENTE, no a ERROR: la próxima pasada lo cogerá ya por URL.
 function esRecuperablePorUrl(msg){
   const m=String(msg||'').toLowerCase();
-  return m.includes('payload_too_large')||m.includes('413')||m.includes('entity too large');
+  return m.includes('payload_too_large')||m.includes('413')||m.includes('entity too large')
+      || m.includes('via url')||m.includes('vía url');   // marca puesta a mano al reencolar
 }
 function esFalloTransitorio(msg){
   if(esRecuperablePorUrl(msg))return true;
+  if(/JSON_TRUNCADO|JSON_ROTO/.test(String(msg||'')))return true;
   const m=String(msg||'').toLowerCase();
   return m.includes('credit balance')      // saldo de API agotado
       || m.includes('rate_limit')||m.includes('rate limit')
@@ -809,7 +811,7 @@ let _cuota={peticiones:null,tokensEntrada:null,reinicio:null,visto:0};
 async function callAI(content){
   const r=await fetch("/api/anthropic",{
     method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:4096,messages:[{role:"user",content}]})
+    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:8192,messages:[{role:"user",content}]})
   });
   try{
     const pet=r.headers.get('anthropic-ratelimit-requests-remaining');
@@ -828,6 +830,11 @@ async function callAI(content){
   catch(e){throw new Error(`Respuesta no válida (HTTP ${r.status}). ${txt.slice(0,120)}`);}
   if(data.error)throw new Error(data.error.message||JSON.stringify(data.error));
   if(!r.ok)throw new Error(`HTTP ${r.status}: ${txt.slice(0,120)}`);
+  // Si la respuesta se cortó por longitud, el JSON llega a medias. Hay que
+  // saberlo aquí: una factura truncada NO es "no es una factura".
+  if(data.stop_reason==='max_tokens'){
+    throw new Error('JSON_TRUNCADO: la respuesta se cortó por longitud (documento con muchas líneas)');
+  }
   return (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
 }
 // Extrae el PRIMER objeto JSON completo respetando cadenas y escapes.
@@ -857,12 +864,23 @@ function repararJson(j){
 function parseJson(txt){
   const bruto=extraerJson(txt);
   if(bruto===null){
-    throw new Error('SIN_JSON: sin objeto JSON completo \u00b7 '+String(txt||'').trim().slice(0,200));
+    // Dos fallos MUY distintos que antes trataba igual:
+    //  · hay una llave abierta que nunca cierra -> la respuesta se cortó y esto
+    //    SÍ era un documento válido: nunca se puede descartar.
+    //  · no hay ninguna llave -> el modelo contestó en prosa, normalmente para
+    //    decir que no es una factura: ahí el descarte sí tiene sentido.
+    const hayLlave=String(txt||'').includes('{');
+    const etiqueta=hayLlave?'JSON_TRUNCADO':'SIN_JSON';
+    throw new Error(etiqueta+': '+(hayLlave?'la respuesta se cortó a medias':'el modelo no devolvió JSON')
+      +' \u00b7 '+String(txt||'').trim().slice(0,200));
   }
   try{return JSON.parse(bruto);}
   catch(e){
     try{return JSON.parse(repararJson(bruto));}
-    catch(e2){throw new Error('SIN_JSON: JSON malformado ('+e2.message+') \u00b7 '+bruto.slice(0,200));}
+    // Mal formado pero con llaves: el modelo SÍ intentó describir un documento.
+    // Descartarlo sería tirar una factura buena, así que se trata como error
+    // reintentable, no como "esto no era una factura".
+    catch(e2){throw new Error('JSON_ROTO: JSON mal formado ('+e2.message+') \u00b7 '+bruto.slice(0,200));}
   }
 }
 
@@ -1287,6 +1305,7 @@ async function procesarUno(c){
   let d;
   try{ d=parseJson(respuestaCruda); }
   catch(err){
+    // Un truncado se propaga como error (reintentable): jamás se descarta.
     if(!/^SIN_JSON/.test(err.message)) throw err;
     // El modelo ha contestado en prosa ("no veo ninguna factura...") o ha cortado
     // el JSON. Antes esto mataba el adjunto en ERROR para siempre. Ahora se
@@ -1296,6 +1315,7 @@ async function procesarUno(c){
     const cruda2=await callAI([block,{type:"text",text:prompt2}]);
     try{ d=parseJson(cruda2); }
     catch(err2){
+      if(/^(JSON_TRUNCADO|JSON_ROTO)/.test(err2.message)) throw err2;
       if(!c.correoAdjId) throw err2;
       c.descartado=('el modelo no devolvi\u00f3 JSON: '+String(respuestaCruda||'').trim().replace(/\s+/g,' ')).slice(0,200);
       await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'DESCARTADO',error:c.descartado})}).catch(()=>{});
