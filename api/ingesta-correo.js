@@ -33,22 +33,24 @@ const SB_URL = "https://qjfraquadsvtfwolfbkb.supabase.co";
 const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFqZnJhcXVhZHN2dGZ3b2xmYmtiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAwNTYxNzIsImV4cCI6MjA5NTYzMjE3Mn0.3XidwXSbZPWKdlQD7vPOnqc96oY7sEVq7Bc74KF3okk";
 const BUCKET = "documentos";
 
+// OJO: maxDuration tiene que ser un NÚMERO LITERAL. Vercel lee esta línea
+// analizando el código en crudo, antes de ejecutarlo, así que una variable aquí
+// rompe la compilación entera con "Unhandled type: Identifier". Si algún día el
+// proyecto pasa a plan Pro, cambia el 60 por 300 AQUÍ, a mano.
+export const config = { maxDuration: 60 };
+
 const DIAS_ATRAS   = 60;  // ventana de DESCUBRIMIENTO (el procesado ya no depende de ella)
 const MAX_INTENTOS = 3;   // reintentos antes de dejar un correo en ERROR definitivo
 
 // El límite real no es un número de correos, es el tiempo: unos pesan 200 KB y
 // otros 15 MB. Un tope fijo o se queda corto en los días flojos o revienta por
 // timeout en los días de cierre de mes. Se procesa mientras quede presupuesto.
-//
-// 60 s es lo que permite cualquier plan de Vercel. Si el proyecto está en Pro,
-// pon INGESTA_SEGUNDOS_MAX=300 en las variables de entorno y esto se multiplica
-// por cinco sin tocar el código.
-const SEGUNDOS_MAX  = parseInt(process.env.INGESTA_SEGUNDOS_MAX || "60", 10);
-const MARGEN_MS     = Math.min(15000, SEGUNDOS_MAX * 1000 * 0.25); // colchón para cerrar limpio
+// Este valor debe ir en línea con el maxDuration de arriba.
+const SEGUNDOS_MAX   = 60;
+const MARGEN_MS      = 15000;                      // colchón para cerrar limpio
 const PRESUPUESTO_MS = SEGUNDOS_MAX * 1000 - MARGEN_MS;
-const TECHO_CORREOS = 200;                         // freno de seguridad, no objetivo
+const TECHO_CORREOS  = 200;                        // freno de seguridad, no objetivo
 
-export const config = { maxDuration: SEGUNDOS_MAX };
 
 // Carpetas que no se inventarían. Enviados y borradores no son facturas recibidas;
 // la papelera se excluye porque borrar es una decisión humana que hay que respetar.
