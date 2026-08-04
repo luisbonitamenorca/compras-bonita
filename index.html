@@ -145,6 +145,9 @@
   td{padding:6px 8px;border-bottom:0.5px solid var(--line);vertical-align:middle}
   tr:hover td{background:var(--bg)}
   td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  /* Las fechas partían en dos líneas al estrecharse la columna. width:1% hace
+     que la columna se ajuste justo a su contenido y nowrap impide el corte. */
+  th.fecha,td.fecha{white-space:nowrap;width:1%;font-variant-numeric:tabular-nums}
   .editable{border:1px dashed transparent;border-radius:6px;padding:2px 6px;cursor:text}
   .editable:hover{border-color:var(--line);background:var(--bg)}
   .link{color:var(--wine);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
@@ -683,7 +686,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v10 · fecha de registro = hoy (04-ago-2026 14:50)');
+  console.log('Compras Bonita · v11 · codigo A3 proveedores + columna fecha (04-ago-2026 15:05)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1587,14 +1590,14 @@ function renderAlb(){
   const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headAlb').innerHTML=
-    thh('albaranes','fecha','Fecha')+thh('albaranes','cargado','Cargado')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
+    thh('albaranes','fecha','Fecha','fecha')+thh('albaranes','cargado','Cargado')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
     thh('albaranes','centro','Centro')+thh('albaranes','total','Total','num')+thh('albaranes','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('albBody');
   document.getElementById('albCount').textContent=albaranes.length;
   document.getElementById('albTotal').textContent=fmt(albaranes.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyA').style.display=albaranes.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
-    <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
+    <td class="fecha">${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
@@ -1714,14 +1717,14 @@ function renderFac(){
   const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headFac').innerHTML=
-    thh('facturas','fecha','Fecha')+thh('facturas','cargado','Cargado')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
+    thh('facturas','fecha','Fecha','fecha')+thh('facturas','cargado','Cargado')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
     thh('facturas','centro','Centro')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('facBody');
   document.getElementById('facCount').textContent=facturas.length;
   document.getElementById('facTotal').textContent=fmt(facturas.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyF').style.display=facturas.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
-    <td>${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
+    <td class="fecha">${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
@@ -2311,20 +2314,38 @@ async function saveDepto(id,val){
   }catch(err){toast('Error: '+err.message,true);loadProveedores();}
 }
 
-// ---- cuenta de proveedor (400/410) ----
-// Celda editable: si está vacía ofrece buscarla en el maestro de A3.
+// ---- código de proveedor en A3 ----
+// Se enseña el código interno de A3, no la cuenta 40xxxx. Si la cuenta guardada
+// no está en el maestro, se muestra la cuenta entre paréntesis para que se vea
+// que hay algo que no casa, en vez de dejar la celda en blanco.
 function celdaCuentaProv(p){
-  const v=p.cuenta_proveedor||'';
+  const cta=p.cuenta_proveedor||'';
+  const cod=cta?(a3CuentaACodigo[cta]||''):'';
+  const txt=cod||(cta?`(${cta})`:'');
   const lupa=`<span class="link" style="font-size:11px;margin-left:4px" onclick="buscarCuentaProv('${p.id}')" title="Buscar en el maestro de A3">🔎</span>`;
-  return `<span class="editable" style="font-variant-numeric:tabular-nums" onblur="saveCuentaProv('${p.id}',this.textContent)" contenteditable>${v||'—'}</span>${v?'':lupa}`;
+  const aviso=(cta&&!cod)?' title="Esta cuenta no está en el maestro de A3"':'';
+  return `<span class="editable" style="font-variant-numeric:tabular-nums"${aviso} onblur="saveCuentaProv('${p.id}',this.textContent)" contenteditable>${txt||'—'}</span>${cta?'':lupa}`;
 }
 async function saveCuentaProv(id,val){
-  val=(val||'').replace(/[^0-9]/g,'');
-  if(val && !/^(40|41)\d{7}$/.test(val)){toast('La cuenta de proveedor debe empezar por 40 o 41 y tener 9 dígitos',true);loadProveedores();return;}
+  let txt=(val||'').trim().replace(/^\(|\)$/g,'');
+  if(txt==='—')txt='';
+  let cuenta=null;
+  if(txt){
+    // Se admite tanto el código de A3 como la cuenta contable: lo que se guarda
+    // siempre es la cuenta, porque es de lo que tira la exportación.
+    if(/^(40|41)\d{7}$/.test(txt)){
+      cuenta=txt;
+      if(!a3CuentaACodigo[cuenta]){toast('Esa cuenta no está en el maestro de A3',true);loadProveedores();return;}
+    }else{
+      cuenta=a3CodigoACuenta[txt.toUpperCase()];
+      if(!cuenta){toast(`El código "${txt}" no existe en el maestro de A3`,true);loadProveedores();return;}
+    }
+  }
   try{
-    await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({cuenta_proveedor:val||null})});
-    const p=proveedores.find(x=>x.id===id);if(p)p.cuenta_proveedor=val||null;
-    toast(val?'Cuenta de proveedor guardada':'Cuenta de proveedor quitada');
+    await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({cuenta_proveedor:cuenta})});
+    const p=proveedores.find(x=>x.id===id);if(p)p.cuenta_proveedor=cuenta;
+    toast(cuenta?`Código de A3 guardado: ${a3CuentaACodigo[cuenta]}`:'Código de A3 quitado');
+    renderProv();
   }catch(err){toast('Error: '+err.message,true);loadProveedores();}
 }
 // Consulta al maestro de A3 por NIF y, si no, por nombre.
@@ -2484,8 +2505,26 @@ function exportConcil(){
   XLSX.writeFile(wb,`conciliacion_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
+// El proveedor guarda la cuenta contable (40xxxx/41xxxx), pero A3 identifica al
+// proveedor por su código interno (3, A57, 136...). Son 1 a 1 en el maestro, así
+// que se muestra y se edita el código, y por debajo se sigue guardando la cuenta,
+// que es lo que usa la exportación.
+let a3CuentaACodigo={}, a3CodigoACuenta={};
+async function cargarMaestroA3(){
+  if(Object.keys(a3CuentaACodigo).length)return;
+  try{
+    const m=await sb('compras_cuenta_a3?select=cuenta,codigo&limit=5000');
+    m.forEach(x=>{
+      if(x.cuenta&&x.codigo){
+        a3CuentaACodigo[x.cuenta]=x.codigo;
+        a3CodigoACuenta[String(x.codigo).toUpperCase()]=x.cuenta;
+      }
+    });
+  }catch(err){console.warn('No pude cargar el maestro de A3:',err.message);}
+}
 async function loadProveedores(){
   try{
+    await cargarMaestroA3();
     proveedores=await sb('compras_proveedor?select=id,nombre,nif,departamento,cuenta_contable,cuenta_proveedor,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
     const docs=await sb('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
@@ -2506,7 +2545,7 @@ function renderProv(){
     av.innerHTML=`⚠️ Hay ${nuevos.length} proveedor${nuevos.length>1?'es':''} nuevo${nuevos.length>1?'s':''} sin autorizar, detectado${nuevos.length>1?'s':''} al procesar documentos. Revísalos: corrige el nombre/CIF si hace falta y autorízalos.`;
   }else av.style.display='none';
   document.getElementById('headProv').innerHTML=
-    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','depto','Departamento')+'<th>Cuenta gasto</th><th>Cuenta proveedor</th>'+
+    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','depto','Departamento')+'<th>Cuenta gasto</th><th>Cód. A3</th>'+
     thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th><th>Muestras</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
   const tb=document.getElementById('provBody');
   document.getElementById('provCount').textContent=proveedores.length;
@@ -2718,7 +2757,7 @@ function exportProv(){
   const keymap={nombre:p=>p.nombre,nif:p=>p.nif,depto:p=>p.departamento||'',crit:p=>p.critico?1:0,docs:p=>p._n};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(p=>({Nombre:p.nombre||'','CIF / NIF':p.nif||'',Departamento:p.departamento||'',
-    'Cuenta gasto':p.cuenta_contable||'','Cuenta proveedor':p.cuenta_proveedor||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
+    'Cuenta gasto':p.cuenta_contable||'','Cód. A3':(a3CuentaACodigo[p.cuenta_proveedor]||''),'Cuenta proveedor':p.cuenta_proveedor||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
   if(!data.length){toast('No hay proveedores que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Proveedores');
