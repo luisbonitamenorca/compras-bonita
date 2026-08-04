@@ -265,6 +265,7 @@
       <button class="tab-btn" data-v="albaranes" onclick="tab('albaranes')">Albaranes</button>
       <button class="tab-btn" data-v="facturas" onclick="tab('facturas')">Facturas</button>
       <button class="tab-btn" data-v="conciliacion" onclick="tab('conciliacion')">Conciliación</button>
+      <button class="tab-btn" data-v="buzon" onclick="tab('buzon')">Buzón</button>
       <button class="tab-btn" data-v="a3" onclick="tab('a3')">Exportar A3</button>
       <button class="tab-btn" data-v="productos" onclick="tab('productos')">Productos</button>
       <button class="tab-btn" data-v="proveedores" onclick="tab('proveedores')">Proveedores</button>
@@ -426,6 +427,34 @@
         </div>
         <div id="emptyCon" class="empty" style="display:none">No hay albaranes detectados en las facturas todavía. Sube alguna factura con su lista de albaranes.</div>
         <p class="hint">Cada fila es un albarán que aparece dentro de una factura. «Falta» significa que ese albarán no está en tu listado de Albaranes: probablemente quede por entrar. El objetivo no es cuadrar el céntimo, sino que no se escape ningún albarán del coste analítico.</p>
+      </div>
+    </section>
+
+    <!-- BUZÓN: conciliación correo -> app -->
+    <section id="v-buzon" class="view">
+      <div class="panel">
+        <div class="filters">
+          <div><label class="fld">Diagnóstico</label><select id="buzDiag" onchange="renderBuzon()"></select></div>
+          <div><label class="fld">Remitente</label><select id="buzRem" onchange="renderBuzon()"></select></div>
+          <div><label class="fld">Desde</label><input type="date" id="buzDesde" onchange="renderBuzon()"></div>
+          <div style="flex:1 1 auto;text-align:right;align-self:flex-end;display:flex;gap:10px;justify-content:flex-end">
+            <button class="btn ghost" onclick="loadBuzon()">↻ Refrescar</button>
+            <button class="btn ghost" onclick="reencolarErrores()">Reencolar con error</button>
+          </div>
+        </div>
+        <div id="buzKpis" class="kpis"></div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>Fecha</th><th>Remitente</th><th>Asunto</th><th>Carpeta</th>
+              <th style="text-align:right">Adj.</th><th style="text-align:right">Docs</th>
+              <th>Diagnóstico</th><th></th>
+            </tr></thead>
+            <tbody id="buzBody"></tbody>
+          </table>
+        </div>
+        <div id="emptyBuz" class="empty" style="display:none">No hay correos que encajen con el filtro.</div>
+        <p class="hint">Cada fila es un correo del buzón, esté procesado o no. «Adj.» es aceptados/detectados: si detectados es mayor, hay adjuntos rechazados por tipo. «Pendiente de leer» significa que la ingesta aún no ha llegado a ese correo, no que se haya perdido. «Correo sin adjuntos» con enlaces suele ser un proveedor que manda la factura por enlace de descarga en vez de adjunta.</p>
       </div>
     </section>
 
@@ -654,7 +683,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · ingesta correo v2 (18-jul-2026)');
+  console.log('Compras Bonita · buzón v3 + parseJson robusto (04-ago-2026)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -781,10 +810,40 @@ async function callAI(content){
   if(!r.ok)throw new Error(`HTTP ${r.status}: ${txt.slice(0,120)}`);
   return (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
 }
+// Extrae el PRIMER objeto JSON completo respetando cadenas y escapes.
+// La versión anterior cortaba del primer "{" al último "}", así que si el modelo
+// añadía una nota detrás ("...} Nota: revisar {el IVA}") se tragaba la prosa de
+// en medio y el parse reventaba. Aquí se cuenta la profundidad de llaves.
+function extraerJson(txt){
+  const limpio=String(txt||'').replace(/```json/gi,'').replace(/```/g,'');
+  const ini=limpio.indexOf('{');
+  if(ini<0)return null;
+  let prof=0,enStr=false,esc=false;
+  for(let i=ini;i<limpio.length;i++){
+    const ch=limpio[i];
+    if(esc){esc=false;continue;}
+    if(ch==='\\'){if(enStr)esc=true;continue;}
+    if(ch==='"'){enStr=!enStr;continue;}
+    if(enStr)continue;
+    if(ch==='{')prof++;
+    else if(ch==='}'){prof--;if(prof===0)return limpio.slice(ini,i+1);}
+  }
+  return null; // objeto sin cerrar: respuesta truncada
+}
+// Arreglos de lo que el modelo estropea a menudo y no cambia el significado.
+function repararJson(j){
+  return j.replace(/,\s*([}\]])/g,'$1');   // comas colgando antes de } o ]
+}
 function parseJson(txt){
-  const clean=txt.replace(/```json|```/g,"").trim();
-  const s=clean.indexOf("{"),e=clean.lastIndexOf("}");
-  return JSON.parse(s>=0?clean.slice(s,e+1):clean);
+  const bruto=extraerJson(txt);
+  if(bruto===null){
+    throw new Error('SIN_JSON: sin objeto JSON completo \u00b7 '+String(txt||'').trim().slice(0,200));
+  }
+  try{return JSON.parse(bruto);}
+  catch(e){
+    try{return JSON.parse(repararJson(bruto));}
+    catch(e2){throw new Error('SIN_JSON: JSON malformado ('+e2.message+') \u00b7 '+bruto.slice(0,200));}
+  }
 }
 
 /* ---------- cola de subida ---------- */
@@ -1198,7 +1257,24 @@ async function procesarUno(c){
     ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:c.b64}}
     : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}};
   const respuestaCruda=await callAI([block,{type:"text",text:prompt}]);
-  const d=parseJson(respuestaCruda);
+  let d;
+  try{ d=parseJson(respuestaCruda); }
+  catch(err){
+    if(!/^SIN_JSON/.test(err.message)) throw err;
+    // El modelo ha contestado en prosa ("no veo ninguna factura...") o ha cortado
+    // el JSON. Antes esto mataba el adjunto en ERROR para siempre. Ahora se
+    // reintenta una vez exigiendo solo JSON, y si vuelve a fallar se descarta
+    // con el texto literal del modelo a la vista, que es revisable.
+    const prompt2=prompt+"\n\nIMPORTANTE: responde \u00daNICAMENTE con el objeto JSON, sin texto antes ni despu\u00e9s, sin ``` y sin explicaciones. Si el documento no es una factura ni un albar\u00e1n, devuelve {\"tipo\":\"otro\",\"motivo\":\"...\"}.";
+    const cruda2=await callAI([block,{type:"text",text:prompt2}]);
+    try{ d=parseJson(cruda2); }
+    catch(err2){
+      if(!c.correoAdjId) throw err2;
+      c.descartado=('el modelo no devolvi\u00f3 JSON: '+String(respuestaCruda||'').trim().replace(/\s+/g,' ')).slice(0,200);
+      await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'DESCARTADO',error:c.descartado})}).catch(()=>{});
+      return;
+    }
+  }
   // documento de correo que NO es factura ni albarán: descartar sin guardar nada
   if(c.correoAdjId && d.tipo==='otro'){
     c.descartado=(d.motivo||'no es factura ni albarán').slice(0,200);
@@ -2750,7 +2826,103 @@ function tab(v){[...document.querySelectorAll('.tab-btn')].forEach(b=>b.classLis
   [...document.querySelectorAll('.view')].forEach(s=>s.classList.toggle('active',s.id==='v-'+v));
   if(v==='resumen')renderDashboard();
   if(v==='conciliacion')renderConciliacion();
+  if(v==='buzon')loadBuzon();
   if(v==='a3'){initA3();renderA3();}}
+/* ---------- Buzón: conciliación correo -> app ----------
+   Responde a "¿ha llegado todo?" mirando el inventario del buzón contra lo que
+   se generó, en vez de suponerlo. La vista compras_conciliacion_correo hace el
+   diagnóstico en Postgres; aquí solo se pinta y se filtra. */
+let buzonRows=[];
+async function loadBuzon(){
+  const body=document.getElementById('buzBody');
+  if(body)body.innerHTML='<tr><td colspan="8" style="color:var(--muted)">Cargando…</td></tr>';
+  try{
+    buzonRows=await sb('compras_conciliacion_correo?select=*&order=fecha_correo.desc&limit=1000');
+  }catch(e){
+    buzonRows=[];
+    if(body)body.innerHTML='<tr><td colspan="8" style="color:var(--muted)">No se pudo cargar: '+e.message+'</td></tr>';
+    return;
+  }
+  rellenaSelect('buzDiag','Todos',[...new Set(buzonRows.map(r=>r.diagnostico))].sort());
+  rellenaSelect('buzRem','Todos',[...new Set(buzonRows.map(r=>r.remitente).filter(Boolean))].sort());
+  renderBuzon();
+}
+function rellenaSelect(id,etiqueta,valores){
+  const el=document.getElementById(id); if(!el)return;
+  const prev=el.value;
+  el.innerHTML='<option value="">'+etiqueta+'</option>'+valores.map(v=>`<option>${esc(v)}</option>`).join('');
+  if(prev&&valores.includes(prev))el.value=prev;
+}
+function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function renderBuzon(){
+  const diag=document.getElementById('buzDiag')?.value||'';
+  const rem=document.getElementById('buzRem')?.value||'';
+  const desde=document.getElementById('buzDesde')?.value||'';
+  const rows=buzonRows.filter(r=>
+    (!diag||r.diagnostico===diag)&&
+    (!rem||r.remitente===rem)&&
+    (!desde||(r.fecha_correo||'')>=desde));
+
+  // KPIs: lo que importa es cuánto NO está resuelto y por qué.
+  const n=k=>buzonRows.filter(r=>r.diagnostico===k).length;
+  const pendientes=n('pendiente de leer'), conError=n('adjuntos con error')+n('correo con error de lectura');
+  const rechazados=n('adjuntos rechazados por tipo'), sinAdj=n('correo sin adjuntos');
+  const perdidos=n('adjuntos perdidos al subir');
+  const kpi=(v,t,alerta)=>`<div class="kpi"><div class="kv" style="${alerta&&v>0?'color:var(--bad,#c0392b)':''}">${v}</div><div class="kl">${t}</div></div>`;
+  const cont=document.getElementById('buzKpis');
+  if(cont)cont.innerHTML=
+     kpi(buzonRows.length,'correos en el buzón',false)
+    +kpi(pendientes,'pendientes de leer',pendientes>30)
+    +kpi(conError,'con error',true)
+    +kpi(rechazados,'adjuntos rechazados',true)
+    +kpi(sinAdj,'sin adjuntos',false)
+    +kpi(perdidos,'adjuntos perdidos',true);
+
+  const body=document.getElementById('buzBody');
+  const vacio=document.getElementById('emptyBuz');
+  if(vacio)vacio.style.display=rows.length?'none':'block';
+  if(!body)return;
+  body.innerHTML=rows.map(r=>{
+    const alerta=['adjuntos con error','correo con error de lectura','adjuntos perdidos al subir','adjuntos rechazados por tipo'].includes(r.diagnostico);
+    const ok=r.diagnostico==='ok';
+    const color=alerta?'var(--bad,#c0392b)':(ok?'var(--muted)':'var(--warn,#b7791f)');
+    const adj=`${r.adj_aceptados}/${r.adj_detectados}`;
+    const f=(r.fecha_correo||'').slice(0,10);
+    return `<tr>
+      <td>${f}</td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${esc(r.remitente)}</td>
+      <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis">${esc(r.asunto)}</td>
+      <td style="color:var(--muted)">${esc(r.carpeta||'')}</td>
+      <td style="text-align:right">${adj}</td>
+      <td style="text-align:right">${r.documentos}</td>
+      <td style="color:${color}">${esc(r.diagnostico)}</td>
+      <td><span class="link" onclick="detalleCorreo(${r.id})">ver</span></td>
+    </tr>`;}).join('');
+}
+async function detalleCorreo(id){
+  try{
+    const [c]=await sb(`compras_correo?id=eq.${id}&select=asunto,remitente,fecha_correo,carpeta,estado,error,enlaces,intentos`);
+    const adj=await sb(`compras_correo_adjunto?correo_id=eq.${id}&select=nombre_archivo,mime,estado,error,url,doc_id&order=id.asc`);
+    const lineas=adj.length
+      ? adj.map(a=>`• ${a.nombre_archivo} [${a.estado}]${a.error?' — '+a.error:''}`).join('\n')
+      : '(sin adjuntos registrados)';
+    const enl=(c.enlaces||[]).length?'\n\nEnlaces de descarga detectados:\n'+c.enlaces.join('\n'):'';
+    alert(`${c.asunto||'(sin asunto)'}\nDe: ${c.remitente||'?'}\nCarpeta: ${c.carpeta||'?'}  ·  Estado: ${c.estado}`
+      +(c.error?`\nError: ${c.error} (intentos: ${c.intentos||0})`:'')
+      +`\n\nAdjuntos:\n${lineas}${enl}`);
+  }catch(e){alert('No se pudo cargar el detalle: '+e.message);}
+}
+// Devuelve a la cola los adjuntos que murieron en ERROR. Se usa tras arreglar
+// la causa: sin esto, ERROR es un pozo del que nada vuelve.
+async function reencolarErrores(){
+  if(!confirm('¿Devolver a la cola todos los adjuntos en ERROR para reintentar el OCR?'))return;
+  try{
+    const r=await sb('compras_correo_adjunto?estado=eq.ERROR',{method:'PATCH',
+      body:JSON.stringify({estado:'PENDIENTE',claimed_at:null,error:null})});
+    alert(`${r.length} adjuntos devueltos a la cola. Se procesarán solos.`);
+    loadBuzon();
+  }catch(e){alert('No se pudo reencolar: '+e.message);}
+}
 function fmt(n){if(n==null||n==='')return '';return Number(n).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';}
 function fmtCarga(ts){if(!ts)return '';const d=new Date(ts);if(isNaN(d))return '';const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} <span style="color:var(--muted);font-size:11px">${p(d.getHours())}:${p(d.getMinutes())}</span>`;}
 function estBadge(ed){
