@@ -686,7 +686,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v18 · reparto por centro de coste (04-ago-2026 18:15)');
+  console.log('Compras Bonita · v19 · reparto bajo peticion + retencion (05-ago-2026 11:45)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1827,6 +1827,7 @@ async function revisar(docId){
       repartoFilas=await sb(`compras_doc_reparto?doc_id=eq.${docId}&select=id,orden,base,tipo_iva,centro_coste,cuenta_gasto,descripcion,manual&order=orden.asc`);
     }catch(e){repartoFilas=[];}
   }else repartoFilas=[];
+  modoReparto=false;
   document.getElementById('mTitle').textContent=`${tituloTipo} · ${a.proveedor||''} ${a.num_documento?'· '+a.num_documento:''}`;
   // imagen
   const ic=document.getElementById('mImg');
@@ -1971,10 +1972,38 @@ function addRep(){
   renderReparto();
 }
 function delRep(i){ repartoFilas[i]._del=true; renderReparto(); }
+// Arranca en modo "no repartido". Las líneas que la app crea sola para separar
+// tipos de IVA NO son un reparto por centros: enseñarlas aquí hacía creer que la
+// factura ya estaba repartida. Solo se abre la tabla si el usuario lo pide o si
+// alguien ya repartió a mano antes.
+let modoReparto=false;
+function activarReparto(){
+  modoReparto=true;
+  // Se parte del desglose por IVA que ya existe, para no perderlo ni tener que
+  // reescribir los importes a mano.
+  repartoFilas.forEach(r=>{r._tocada=true;});
+  if(!repartoFilas.filter(r=>!r._del).length)addRep(); else renderReparto();
+}
+function cancelarReparto(){
+  modoReparto=false;
+  repartoFilas=repartoFilas.filter(r=>!r._new);
+  repartoFilas.forEach(r=>{delete r._del;});
+  renderReparto();
+}
 function renderReparto(){
   const cont=document.getElementById('mReparto'); if(!cont)return;
   const a=revisarDoc, base=num(a.base);
   const vivas=repartoFilas.filter(r=>!r._del);
+  const hayManual=repartoFilas.some(r=>r.manual);
+
+  if(!hayManual && !modoReparto){
+    const nIva=new Set(repartoFilas.map(r=>r.tipo_iva).filter(Boolean)).size;
+    const centroActual=(mCentros.find(c=>c.canal===a.canal)||{}).canal||a.canal||'sin centro';
+    cont.innerHTML=`<div style="font-weight:600;font-size:13px;margin-bottom:4px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Centro de coste</div>
+      <p class="hint" style="margin:0 0 10px">Toda la factura va a <b>${esc(centroActual)}</b>.${nIva>1?` Se exportará en ${nIva} líneas por llevar ${nIva} tipos de IVA, todas al mismo centro.`:''}</p>
+      <span class="link" onclick="activarReparto()">↔ Repartir entre varios centros</span>`;
+    return;
+  }
   const suma=vivas.reduce((s,r)=>s+(num(r.base)||0),0);
   const dif=(base!=null)?Math.round((base-suma)*100)/100:null;
   const cuadra=(dif!=null&&Math.abs(dif)<=0.02);
@@ -1984,8 +2013,9 @@ function renderReparto(){
     <p class="hint" style="margin:0 0 10px">Cada línea será una fila del fichero de A3. Déjalo vacío si toda la factura va a un solo centro: entonces se usa el de arriba.</p>`;
 
   if(!vivas.length){
-    cont.innerHTML=cabecera+`<div style="display:flex;gap:10px;align-items:center">
-      <span class="link" onclick="addRep()">+ repartir esta factura entre varios centros</span></div>`;
+    cont.innerHTML=cabecera+`<div style="display:flex;gap:14px;align-items:center">
+      <span class="link" onclick="addRep()">+ añadir primera línea</span>
+      <span class="link" onclick="cancelarReparto()">cancelar</span></div>`;
     return;
   }
   const filas=repartoFilas.map((r,i)=>r._del?'':`<tr>
@@ -2005,7 +2035,9 @@ function renderReparto(){
      <div style="margin-top:8px;display:flex;gap:14px;flex-wrap:wrap">
        <span class="link" onclick="addRep()">+ añadir línea</span>
        <span class="link" onclick="repartirRestante()">repartir lo que falta en la última línea</span>
+       <span class="link" onclick="cancelarReparto()">cancelar</span>
      </div>${avisoCuadre}
+     ${nCentros<2?'<p class="hint" style="margin:8px 0 0">Asigna un centro distinto a cada línea; las que dejes en «hereda» irán al centro de la factura.</p>':''}
      <div style="margin-top:12px"><button class="btn" onclick="guardarReparto()">Guardar reparto</button></div>`;
 
   cont.querySelectorAll('[data-rep]').forEach(el=>el.addEventListener('blur',()=>setRep(+el.dataset.rep,'base',el.textContent)));
