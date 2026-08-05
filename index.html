@@ -718,7 +718,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v26 · buscador y orden en proveedores (05-ago-2026 15:05)');
+  console.log('Compras Bonita · v27 · centro por codigo de datafono (05-ago-2026 15:40)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -851,11 +851,25 @@ async function sbAll(path,tam=1000,maxPaginas=50){
 }
 // Maestros para los desplegables del reparto. Se cargan una vez por sesión.
 let mCentros=[], mTiposIva=[];
+let mTerminales={};
+// Traduce el código impreso al centro. El documento lo trae sin la M inicial y
+// el maestro con ella, así que se normaliza por los dos lados.
+function canalDeTerminal(cod){
+  const k=String(cod||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(!k)return null;
+  return mTerminales[k]||mTerminales['M'+k]||mTerminales[k.replace(/^M/,'')]||null;
+}
 async function cargarMaestrosReparto(){
   if(mCentros.length)return;
   try{
     mCentros=await sb('compras_centro_coste?select=codigo,canal&order=codigo.asc');
     mTiposIva=await sb('compras_tipo_iva?select=codigo,descripcion&order=codigo.asc');
+    const term=await sb('compras_terminal?select=codigo,canal');
+    mTerminales={};
+    term.forEach(t=>{
+      const k=String(t.codigo).toUpperCase().replace(/[^A-Z0-9]/g,'');
+      mTerminales[k]=t.canal; mTerminales[k.replace(/^M/,'')]=t.canal;
+    });
   }catch(e){console.warn('No pude cargar maestros de reparto:',e.message);}
 }
 /* ---------- supabase storage ---------- */
@@ -1184,6 +1198,8 @@ Asigna "canal" SOLO si una regla, el departamento habitual del proveedor o el pr
 El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet). Si el documento no muestra el CIF pero reconoces el proveedor por la tabla de equivalencias, usa el CIF de esa tabla.
 "base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).
 
+CÓDIGO DE TERMINAL. Las facturas de comisiones de datáfono identifican el local con un código de comercio, que puede aparecer como "Código Cliente", "Nº de comercio", "Merchant ID" o "TID". Si lo ves, devuélvelo en "codigo_terminal" tal cual, sin inventar nada. Si no hay ninguno, pon null.
+
 CENTRO DE COSTE DENTRO DE LA FACTURA. Algunos proveedores facturan a varios de nuestros locales en un mismo documento y marcan a cuál corresponde cada parte. Ese marcador puede ir de dos formas:
  (a) en la misma línea del concepto, o
  (b) EN UNA LÍNEA APARTE, DEBAJO de un grupo de conceptos, sin importe propio.
@@ -1206,7 +1222,7 @@ RETENCIÓN DE IRPF. Algunos proveedores autónomos (profesionales como gestoría
 - No confundas la retención con un descuento comercial ni con el IVA. Si no ves ninguna mención explícita a IRPF o retención, pon retencion:0 y retencion_pct:null.`;
 
   let prompt;
-  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"retencion":0,"retencion_pct":null,"retencion_base":null,"total":0,"reparto_centros":[],"descuento":0,
+  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"retencion":0,"retencion_pct":null,"retencion_base":null,"total":0,"reparto_centros":[],"codigo_terminal":null,"descuento":0,
 "desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
   const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":null,"iva":null,"retencion":0,"retencion_pct":null,"retencion_base":null,"total":null,"descuento":0,
@@ -1393,6 +1409,7 @@ async function procesarUno(c){
     : (porUrl ? {type:"image",source:{type:"url",url:c.urlPublica}}
               : {type:"image",source:{type:"base64",media_type:c.mime,data:c.b64}});
   if(!c.b64 && !c.urlPublica) throw new Error('el documento no tiene ni contenido ni URL de descarga');
+  await cargarMaestrosReparto();
   const respuestaCruda=await callAI([block,{type:"text",text:prompt}]);
   let d;
   try{ d=parseJson(respuestaCruda); }
@@ -1420,7 +1437,9 @@ async function procesarUno(c){
     await sb(`compras_correo_adjunto?id=eq.${c.correoAdjId}`,{method:'PATCH',body:JSON.stringify({estado:'DESCARTADO',error:c.descartado})}).catch(()=>{});
     return;
   }
-  let canal=canalCanonico(d.canal);
+  // El código del datáfono manda sobre lo que el modelo haya deducido: es un
+  // dato duro del documento cruzado con nuestro maestro, no una interpretación.
+  let canal=canalDeTerminal(d.codigo_terminal)||canalCanonico(d.canal);
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
   const docTipo=(tipoUsado==='auto')?(d.tipo||'factura'):tipoUsado;
 
@@ -1598,6 +1617,7 @@ async function procesarUno(c){
     retencion:Math.abs(num(d.retencion)||0)||null, retencion_pct:num(d.retencion_pct),
     retencion_base:num(d.retencion_base),
     reparto_sugerido:(Array.isArray(d.reparto_centros)&&d.reparto_centros.length)?d.reparto_centros:null,
+    codigo_terminal:d.codigo_terminal||null,
     estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,origen:c.correoAdjId?'correo':'manual',
     // páginas: solo tiene sentido en albaranes. paginas_vistas arranca con esta.
     pagina:!esFactura?(num(d.pagina)||1):null,
@@ -2528,7 +2548,12 @@ async function reprocesarDoc(doc){
     retencion:Math.abs(num(d.retencion)||0)||null,
     retencion_pct:num(d.retencion_pct),
     retencion_base:num(d.retencion_base),
-    reparto_sugerido:(Array.isArray(d.reparto_centros)&&d.reparto_centros.length)?d.reparto_centros:null};
+    reparto_sugerido:(Array.isArray(d.reparto_centros)&&d.reparto_centros.length)?d.reparto_centros:null,
+    codigo_terminal:d.codigo_terminal||null};
+  // Si el documento trae código de datáfono y el documento aún no tiene centro,
+  // se asigna desde el maestro. Nunca pisa un centro puesto a mano.
+  const canalTerm=canalDeTerminal(d.codigo_terminal);
+  if(canalTerm && !doc.canal) parche.canal=canalTerm;
   // el reproceso debe guardar TAMBIÉN lo que guarda el alta, o los campos nuevos
   // se quedan a null y la fusión de páginas se queda sin datos con los que trabajar
   if(!esFactura){
