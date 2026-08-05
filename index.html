@@ -727,7 +727,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v33 · recalcular estados de facturas (05-ago-2026 18:35)');
+  console.log('Compras Bonita · v34 · estado al vuelo al corregir importes (05-ago-2026 19:10)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2316,6 +2316,13 @@ async function saveImporteDoc(docId,campo,val){
     if(revisarDoc && revisarDoc.id===docId) revisarDoc[campo]=v;
     const f=(facturas||[]).find(x=>x.id===docId)||(albaranes||[]).find(x=>x.id===docId);
     if(f) f[campo]=v;
+    // Al corregir un importe hay que recalcular el estado: si no, la factura se
+    // queda en ámbar aunque ya cuadre, y parece que el arreglo no ha servido.
+    try{ await sb('rpc/recalcular_estado_facturas',{method:'POST',body:'{}'}); }catch(e){}
+    const fresco=await sb(`compras_doc?id=eq.${docId}&select=estado,estado_detalle`);
+    if(fresco.length && revisarDoc && revisarDoc.id===docId){
+      revisarDoc.estado=fresco[0].estado; revisarDoc.estado_detalle=fresco[0].estado_detalle;
+    }
     toast('Guardado');
     renderDetalle(); loadFacturas();
   }catch(err){toast('Error: '+err.message,true);}
