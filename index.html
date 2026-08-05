@@ -708,7 +708,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v21 · propuesta automatica de reparto (05-ago-2026 12:35)');
+  console.log('Compras Bonita · v22 · centro agrupado + IVA deducido (05-ago-2026 13:05)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1174,6 +1174,20 @@ Asigna "canal" SOLO si una regla, el departamento habitual del proveedor o el pr
 El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet). Si el documento no muestra el CIF pero reconoces el proveedor por la tabla de equivalencias, usa el CIF de esa tabla.
 "base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).
 
+CENTRO DE COSTE DENTRO DE LA FACTURA. Algunos proveedores facturan a varios de nuestros locales en un mismo documento y marcan a cuál corresponde cada parte. Ese marcador puede ir de dos formas:
+ (a) en la misma línea del concepto, o
+ (b) EN UNA LÍNEA APARTE, DEBAJO de un grupo de conceptos, sin importe propio.
+En el caso (b) el marcador afecta a TODAS las líneas que hay por encima desde el marcador anterior, no solo a la inmediatamente superior. Ejemplo real:
+   1  Cuota AGORA Enterprise      139,00
+   1  Alquiler Datafono            25,00
+        RTE BINIFADET
+   1  Cuota AGORA Starter Plus     62,00
+   3  Alquiler Datafono            75,00
+        RTE TAMARINDOS
+Aquí RTE BINIFADET vale 139+25 = 164, y RTE TAMARINDOS vale 62+75 = 137. Sería un ERROR asignar solo la línea de justo encima.
+Devuelve esa lectura en "reparto_centros": una entrada por marcador, con el texto del marcador TAL COMO APARECE y la SUMA de los importes de su grupo. Los importes deben sumar la base imponible. Si el documento no marca centros, devuelve [].
+No confundas estos marcadores con nombres de producto: un marcador va solo en su línea y no tiene precio ni cantidad propios.
+
 RETENCIÓN DE IRPF. Algunos proveedores autónomos (profesionales como gestorías, abogados, arquitectos, o arrendadores de locales) aplican una retención de IRPF que se RESTA del total. Aparece al pie con textos como "Retención IRPF 15%", "IRPF -15%", "Ret. 7%" o "Retención a cuenta", y su importe suele ir con signo negativo o entre paréntesis.
 - "retencion": el IMPORTE retenido SIEMPRE EN POSITIVO, aunque en el documento figure en negativo. Si no hay retención, pon 0.
 - "retencion_pct": el porcentaje aplicado (15, 7, 19, 2...). Si no viene el porcentaje impreso, pon null; NO lo calcules dividiendo.
@@ -1182,7 +1196,7 @@ RETENCIÓN DE IRPF. Algunos proveedores autónomos (profesionales como gestoría
 - No confundas la retención con un descuento comercial ni con el IVA. Si no ves ninguna mención explícita a IRPF o retención, pon retencion:0 y retencion_pct:null.`;
 
   let prompt;
-  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"retencion":0,"retencion_pct":null,"retencion_base":null,"total":0,"descuento":0,
+  const formaFactura=`{"tipo":"factura","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":0,"iva":0,"retencion":0,"retencion_pct":null,"retencion_base":null,"total":0,"reparto_centros":[],"descuento":0,
 "desglose_iva":[{"pct":0,"base":0,"cuota":0}],
 "albaranes":[{"num_albaran":"","fecha":"YYYY-MM-DD","importe":0}]}`;
   const formaAlbaran=`{"tipo":"albaran","fecha":"YYYY-MM-DD","proveedor":"","proveedor_nif":"","num_documento":"","canal":null,"base":null,"iva":null,"retencion":0,"retencion_pct":null,"retencion_base":null,"total":null,"descuento":0,
@@ -1573,6 +1587,7 @@ async function procesarUno(c){
     // el criterio de la base es "importe retenido" y el total ya la lleva restada.
     retencion:Math.abs(num(d.retencion)||0)||null, retencion_pct:num(d.retencion_pct),
     retencion_base:num(d.retencion_base),
+    reparto_sugerido:(Array.isArray(d.reparto_centros)&&d.reparto_centros.length)?d.reparto_centros:null,
     estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,origen:c.correoAdjId?'correo':'manual',
     // páginas: solo tiene sentido en albaranes. paginas_vistas arranca con esta.
     pagina:!esFactura?(num(d.pagina)||1):null,
@@ -1835,7 +1850,7 @@ function exportFac(){
   XLSX.writeFile(wb,`facturas_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function revisar(docId){
-  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,iva,total,descuento,estado,estado_detalle,imagen_url,albaranes_detectados,proveedor_id,proveedor_nif`);
+  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,iva,total,descuento,estado,estado_detalle,imagen_url,albaranes_detectados,proveedor_id,proveedor_nif,reparto_sugerido`);
   if(!r.length){toast('No encontrado',true);return;}
   const a=r[0];
   revisarDoc=a;  // guardamos el doc abierto para la edición
@@ -2009,10 +2024,32 @@ function activarReparto(){
 // Propone un reparto a partir de los conceptos ya leídos de la factura. NO lo
 // guarda: deja la tabla rellena para que la persona revise y corrija. La idea es
 // quitar el trabajo mecánico, no la decisión.
+// Deduce el código de tipo de IVA a partir de base y cuota. Réplica exacta de
+// la función tipo_iva_de() de Postgres, con las mismas tolerancias.
+function tipoIvaDesde(base,cuota){
+  const b=num(base),c=num(cuota);
+  if(b==null||c==null||b===0)return null;
+  const p=c/b*100;
+  if(Math.abs(p-21)<=0.5)return 'ORD21';
+  if(Math.abs(p-10)<=0.5)return 'RED10';
+  if(Math.abs(p-4)<=0.5) return 'SRE';
+  if(Math.abs(p-0)<=0.30)return 'EXE';
+  return null;
+}
 function proponerReparto(){
   const a=revisarDoc, base=num(a.base);
-  const fuente=revisarAlbaranes.filter(x=>!x._del && num(x.importe)!=null);
+  // Fuente preferida: lo que el OCR leyó como marcadores de centro, que respeta
+  // el agrupamiento (un marcador puede abarcar varias líneas). Si no lo hay, se
+  // cae a los conceptos sueltos, que es peor pero mejor que nada.
+  const sug=Array.isArray(a.reparto_sugerido)?a.reparto_sugerido:null;
+  const fuente = (sug&&sug.length)
+    ? sug.map(x=>({num_albaran:x.centro||x.marcador||'',importe:num(x.importe)}))
+         .filter(x=>x.importe!=null)
+    : revisarAlbaranes.filter(x=>!x._del && num(x.importe)!=null);
   if(!fuente.length){toast('No hay conceptos leídos de los que partir',true);return;}
+  if(!sug||!sug.length){
+    toast('Propuesta a partir de conceptos sueltos: revísala con cuidado',true);
+  }
 
   const suma=fuente.reduce((s,x)=>s+(num(x.importe)||0),0);
   if(base!=null && Math.abs(suma-base)>0.02){
@@ -2022,7 +2059,9 @@ function proponerReparto(){
   // Un solo tipo de IVA: se hereda. Varios: se deja en blanco a propósito, porque
   // adivinar qué IVA lleva cada centro sería inventar.
   const tipos=[...new Set(repartoFilas.map(r=>r.tipo_iva).filter(Boolean))];
-  const ivaUnico=(tipos.length===1)?tipos[0]:null;
+  // Con un solo tipo de IVA la app no crea desglose, así que no había de dónde
+  // heredarlo y las líneas salían en blanco. Se deduce de base y cuota.
+  const ivaUnico=(tipos.length===1)?tipos[0]:(tipos.length===0?tipoIvaDesde(a.base,a.iva):null);
 
   const porCentro=new Map(); let sinReconocer=0, nRec=0;
   for(const x of fuente){
