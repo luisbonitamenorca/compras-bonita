@@ -708,7 +708,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v22 · centro agrupado + IVA deducido (05-ago-2026 13:05)');
+  console.log('Compras Bonita · v23 · reproceso guarda campos nuevos (05-ago-2026 13:25)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2004,7 +2004,9 @@ function setRep(i,campo,val){
 function addRep(){
   const base=num(revisarDoc.base)||0;
   const yaSum=repartoFilas.filter(r=>!r._del).reduce((a,r)=>a+(num(r.base)||0),0);
-  repartoFilas.push({base:Math.round(Math.max(0,base-yaSum)*100)/100,tipo_iva:null,
+  const tipos=[...new Set(repartoFilas.map(r=>r.tipo_iva).filter(Boolean))];
+  const ivaDef=(tipos.length===1)?tipos[0]:(tipos.length===0?tipoIvaDesde(revisarDoc.base,revisarDoc.iva):null);
+  repartoFilas.push({base:Math.round(Math.max(0,base-yaSum)*100)/100,tipo_iva:ivaDef,
                      centro_coste:null,cuenta_gasto:null,descripcion:null,_new:true,_tocada:true});
   renderReparto();
 }
@@ -2035,6 +2037,13 @@ function tipoIvaDesde(base,cuota){
   if(Math.abs(p-4)<=0.5) return 'SRE';
   if(Math.abs(p-0)<=0.30)return 'EXE';
   return null;
+}
+// ¿Hay de dónde sacar una propuesta? Puede venir del campo que lee el OCR o,
+// en documentos antiguos, de los conceptos sueltos.
+function hayFuenteReparto(){
+  const a=revisarDoc; if(!a)return false;
+  if(Array.isArray(a.reparto_sugerido)&&a.reparto_sugerido.length)return true;
+  return revisarAlbaranes.filter(x=>!x._del&&num(x.importe)!=null).length>0;
 }
 function proponerReparto(){
   const a=revisarDoc, base=num(a.base);
@@ -2106,7 +2115,7 @@ function renderReparto(){
       <p class="hint" style="margin:0 0 10px">Toda la factura va a <b>${esc(centroActual)}</b>.${nIva>1?` Se exportará en ${nIva} líneas por llevar ${nIva} tipos de IVA, todas al mismo centro.`:''}</p>
       <div style="display:flex;gap:16px;flex-wrap:wrap">
         <span class="link" onclick="activarReparto()">↔ Repartir entre varios centros</span>
-        ${revisarAlbaranes.filter(x=>!x._del&&num(x.importe)!=null).length
+        ${hayFuenteReparto()
           ? '<span class="link" onclick="proponerReparto()">✨ Proponer reparto automático</span>' : ''}
       </div>`;
     return;
@@ -2142,7 +2151,7 @@ function renderReparto(){
      <div style="margin-top:8px;display:flex;gap:14px;flex-wrap:wrap">
        <span class="link" onclick="addRep()">+ añadir línea</span>
        <span class="link" onclick="repartirRestante()">repartir lo que falta en la última línea</span>
-       ${revisarAlbaranes.filter(x=>!x._del&&num(x.importe)!=null).length
+       ${hayFuenteReparto()
          ? '<span class="link" onclick="proponerReparto()">✨ rehacer propuesta automática</span>' : ''}
        <span class="link" onclick="cancelarReparto()">cancelar</span>
      </div>${avisoCuadre}
@@ -2483,7 +2492,13 @@ async function reprocesarDoc(doc){
   const parche={
     fecha:fechaF,num_documento:numF,base,iva,total,descuento,
     estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,
-    albaranes_detectados:esFactura?(d.albaranes||[]):null,raw:d};
+    albaranes_detectados:esFactura?(d.albaranes||[]):null,raw:d,
+    // Estos cuatro faltaban: el reproceso los leía y los tiraba, así que
+    // retención y reparto se quedaban a null por mucho que el OCR los viera.
+    retencion:Math.abs(num(d.retencion)||0)||null,
+    retencion_pct:num(d.retencion_pct),
+    retencion_base:num(d.retencion_base),
+    reparto_sugerido:(Array.isArray(d.reparto_centros)&&d.reparto_centros.length)?d.reparto_centros:null};
   // el reproceso debe guardar TAMBIÉN lo que guarda el alta, o los campos nuevos
   // se quedan a null y la fusión de páginas se queda sin datos con los que trabajar
   if(!esFactura){
