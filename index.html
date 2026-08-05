@@ -709,7 +709,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v24 · centro varios en el listado (05-ago-2026 14:00)');
+  console.log('Compras Bonita · v25 · modelo IRPF en ficha de proveedor (05-ago-2026 14:20)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2698,6 +2698,43 @@ async function saveDepto(id,val){
 // Se enseña el código interno de A3, no la cuenta 40xxxx. Si la cuenta guardada
 // no está en el maestro, se muestra la cuenta entre paréntesis para que se vea
 // que hay algo que no casa, en vez de dejar la celda en blanco.
+// Modelo de retención del proveedor. Es una propiedad suya, no de cada factura:
+// un arrendador siempre es 115 y un profesional o agricultor siempre 111. Sin
+// esto informado, la exportación a A3 bloquea sus facturas con retención.
+function celdaIrpfProv(p){
+  const m=p.retencion_modelo||'';
+  const opts=[['','—'],['111','111 · profesional / agrícola'],['115','115 · alquiler']]
+    .map(([v,t])=>`<option value="${v}"${v===m?' selected':''}>${t}</option>`).join('');
+  const pct=(p.retencion_pct!=null)?Number(p.retencion_pct):'';
+  return `<div style="display:flex;gap:4px;align-items:center;white-space:nowrap">
+      <select style="font-size:12px" onchange="saveIrpfProv('${p.id}','modelo',this.value)">${opts}</select>
+      <span class="editable" style="min-width:34px;display:inline-block;text-align:right;font-variant-numeric:tabular-nums"
+            title="% habitual de retención" onblur="saveIrpfProv('${p.id}','pct',this.textContent)" contenteditable>${pct}</span>
+      <span style="color:var(--muted);font-size:11px">%</span></div>`;
+}
+async function saveIrpfProv(id,campo,val){
+  const p=proveedores.find(x=>x.id===id); if(!p)return;
+  const cambio={};
+  if(campo==='modelo'){
+    cambio.retencion_modelo=val||null;
+  }else{
+    const n=String(val||'').trim().replace(',','.').replace('%','');
+    if(n===''){cambio.retencion_pct=null;}
+    else{
+      const v=Number(n);
+      if(!isFinite(v)||v<0||v>50){toast('El porcentaje de retención debe estar entre 0 y 50',true);renderProv();return;}
+      cambio.retencion_pct=v;
+    }
+  }
+  try{
+    await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(cambio)});
+    Object.assign(p,cambio);
+    toast(campo==='modelo'
+      ? (cambio.retencion_modelo?`Modelo ${cambio.retencion_modelo} guardado`:'Modelo de retención quitado')
+      : 'Porcentaje guardado');
+    renderProv();
+  }catch(err){toast('Error: '+err.message,true);loadProveedores();}
+}
 function celdaCuentaProv(p){
   const cta=p.cuenta_proveedor||'';
   const cod=cta?(a3CuentaACodigo[cta]||''):'';
@@ -2905,7 +2942,7 @@ async function cargarMaestroA3(){
 async function loadProveedores(){
   try{
     await cargarMaestroA3();
-    proveedores=await sb('compras_proveedor?select=id,nombre,nif,departamento,cuenta_contable,cuenta_proveedor,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url&order=nombre.asc');
+    proveedores=await sb('compras_proveedor?select=id,nombre,nif,departamento,cuenta_contable,cuenta_proveedor,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url,retencion_modelo,retencion_pct&order=nombre.asc');
     const docs=await sbAll('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
     proveedores.forEach(p=>p._n=cnt[p.id]||0);
@@ -2925,7 +2962,7 @@ function renderProv(){
     av.innerHTML=`⚠️ Hay ${nuevos.length} proveedor${nuevos.length>1?'es':''} nuevo${nuevos.length>1?'s':''} sin autorizar, detectado${nuevos.length>1?'s':''} al procesar documentos. Revísalos: corrige el nombre/CIF si hace falta y autorízalos.`;
   }else av.style.display='none';
   document.getElementById('headProv').innerHTML=
-    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','depto','Departamento')+'<th>Cuenta gasto</th><th>Cód. A3</th>'+
+    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','depto','Departamento')+'<th>Cuenta gasto</th><th>Cód. A3</th><th>IRPF</th>'+
     thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th><th>Muestras</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
   const tb=document.getElementById('provBody');
   document.getElementById('provCount').textContent=proveedores.length;
@@ -2937,6 +2974,7 @@ function renderProv(){
     <td>${selectDepto(p)}</td>
     <td>${selectCuenta(p.id,p.cuenta_contable)}</td>
     <td>${celdaCuentaProv(p)}</td>
+    <td>${celdaIrpfProv(p)}</td>
     <td><span class="swi" onclick="toggleCritico('${p.id}')" title="Marcar crítico">${p.critico?'🔴':'⚪️'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pautas',this.textContent)" contenteditable>${p.pautas||'—'}</span></td>
     <td><span class="editable" style="font-size:12.5px;color:var(--muted)" onblur="saveProv('${p.id}','pauta_factura',this.textContent)" contenteditable>${p.pauta_factura||'—'}</span></td>
@@ -3137,7 +3175,7 @@ function exportProv(){
   const keymap={nombre:p=>p.nombre,nif:p=>p.nif,depto:p=>p.departamento||'',crit:p=>p.critico?1:0,docs:p=>p._n};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(p=>({Nombre:p.nombre||'','CIF / NIF':p.nif||'',Departamento:p.departamento||'',
-    'Cuenta gasto':p.cuenta_contable||'','Cód. A3':(a3CuentaACodigo[p.cuenta_proveedor]||''),'Cuenta proveedor':p.cuenta_proveedor||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
+    'Cuenta gasto':p.cuenta_contable||'','Cód. A3':(a3CuentaACodigo[p.cuenta_proveedor]||''),'Modelo IRPF':p.retencion_modelo||'','% IRPF':p.retencion_pct??'','Cuenta proveedor':p.cuenta_proveedor||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
   if(!data.length){toast('No hay proveedores que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Proveedores');
