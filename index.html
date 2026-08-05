@@ -626,7 +626,8 @@ const BUCKET="documentos";
 let tipo="auto";
 let cola=[];               // [{file, b64, mime, status}]
 let compras=[], reglas=[], albaranes=[], proveedores=[], productos=[], facturas=[];
-let revisarDoc=null, revisarLineas=[], revisarAlbaranes=[], repartoFilas=[];   // documento abierto en el modal de revisión
+let revisarDoc=null, revisarLineas=[], revisarAlbaranes=[], repartoFilas=[];
+let centrosPorFactura={};   // doc_id -> {n_centros, centros}   // documento abierto en el modal de revisión
 
 /* ---------- ordenación genérica de tablas ---------- */
 const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},facturas:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1},conciliacion:{key:null,dir:1}};
@@ -708,7 +709,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v23 · reproceso guarda campos nuevos (05-ago-2026 13:25)');
+  console.log('Compras Bonita · v24 · centro varios en el listado (05-ago-2026 14:00)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1682,7 +1683,7 @@ async function loadAlbaranes(){
 function renderAlb(){
   let rows=[...albaranes];
   const st=sortState.albaranes;
-  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headAlb').innerHTML=
     thh('albaranes','fecha','Fecha','fecha')+thh('albaranes','cargado','Cargado')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
@@ -1711,7 +1712,13 @@ function exportAlb(){
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function loadFacturas(){
-  try{facturas=await sbAll("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at&order=created_at.desc");renderFac();renderConciliacion();}
+  try{facturas=await sbAll("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at&order=created_at.desc");
+    // Cuántos centros tiene el reparto de cada factura, para poder distinguir
+    // "sin asignar" (en blanco) de "repartida entre varios".
+    try{
+      const rc=await sbAll('compras_factura_centros?select=doc_id,n_centros,centros');
+      centrosPorFactura={}; rc.forEach(x=>{centrosPorFactura[x.doc_id]=x;});
+    }catch(e){centrosPorFactura={};}renderFac();renderConciliacion();}
   catch(err){toast('No pude cargar facturas: '+err.message,true);}
 }
 // Repasa TODOS los documentos del tipo y marca como DUPLICADO los que repiten
@@ -1809,7 +1816,7 @@ async function limpiarLineasFacturas(){
 function renderFac(){
   let rows=[...facturas];
   const st=sortState.facturas;
-  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headFac').innerHTML=
     thh('facturas','fecha','Fecha','fecha')+thh('facturas','cargado','Cargado')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
@@ -1820,12 +1827,22 @@ function renderFac(){
   document.getElementById('emptyF').style.display=facturas.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
     <td class="fecha">${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
-    <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.base)}</td><td class="num">${fmt(a.iva)}</td><td class="num">${a.retencion?'-'+fmt(a.retencion):''}</td><td class="num">${fmt(a.total)}</td>
+    <td>${celdaCentroFactura(a)}</td><td class="num">${fmt(a.base)}</td><td class="num">${fmt(a.iva)}</td><td class="num">${a.retencion?'-'+fmt(a.retencion):''}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
 }
 // desplegable de centro reutilizable para los listados
+// En facturas, una repartida entre varios centros no debe verse igual que una
+// sin asignar. Antes las dos salían en blanco y no había forma de saber cuál
+// faltaba por tocar.
+function celdaCentroFactura(a){
+  const rc=centrosPorFactura[a.id];
+  if(rc && rc.n_centros>1){
+    return `<span class="badge" title="${esc(rc.centros||'')}" style="background:var(--paper);border:1px solid var(--line);padding:2px 8px;border-radius:10px;font-size:12px;white-space:nowrap">varios · ${rc.n_centros}</span>`;
+  }
+  return selectCentro(a.id,a.canal);
+}
 function selectCentro(docId,actual){
   const ops=['<option value="">—</option>'].concat(CENTROS.map(c=>`<option value="${c}"${c===actual?' selected':''}>${c}</option>`)).join('');
   return `<select class="selcentro" onchange="saveDocCanal('${docId}',this.value)">${ops}</select>`;
@@ -1840,7 +1857,7 @@ async function saveDocCanal(docId,val){
 function exportFac(){
   let rows=[...facturas];
   const st=sortState.facturas;
-  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº factura':a.num_documento||'',
     Centro:a.canal||'',Total:a.total??'',Estado:a.estado_detalle||'REVISAR'}));
@@ -2190,6 +2207,10 @@ async function guardarReparto(){
           cuenta_gasto:r.cuenta_gasto||null,descripcion:r.descripcion||null,manual:true})))});
     }
     toast(vivas.length?`Reparto guardado: ${vivas.length} líneas`:'Reparto eliminado');
+    try{
+      const rc=await sbAll('compras_factura_centros?select=doc_id,n_centros,centros');
+      centrosPorFactura={}; rc.forEach(x=>{centrosPorFactura[x.doc_id]=x;});
+    }catch(e){}
     repartoFilas=await sb(`compras_doc_reparto?doc_id=eq.${a.id}&select=id,orden,base,tipo_iva,centro_coste,cuenta_gasto,descripcion,manual&order=orden.asc`);
     renderReparto();
     loadFacturas();
