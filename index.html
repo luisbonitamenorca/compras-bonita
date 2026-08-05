@@ -726,7 +726,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v30 · NIF propio nunca es proveedor (05-ago-2026 17:05)');
+  console.log('Compras Bonita · v31 · auditoria aritmetica de facturas (05-ago-2026 17:45)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -947,6 +947,25 @@ function extraerJson(txt){
 // Arreglos de lo que el modelo estropea a menudo y no cambia el significado.
 function repararJson(j){
   return j.replace(/,\s*([}\]])/g,'$1');   // comas colgando antes de } o ]
+}
+// Comprueba la coherencia interna de una factura. Devuelve {ok, motivo}.
+// Tolerancia de 2 céntimos: los proveedores redondean línea a línea y exigir
+// exactitud absoluta marcaría media base como incorrecta.
+function cuadreFactura(base,iva,retencion,total,desglose){
+  const T=0.02;
+  if(base==null||total==null)return {ok:true};        // sin datos no se juzga
+  const calc=base+(iva||0)-(retencion||0);
+  if(Math.abs(calc-total)>T)
+    return {ok:false,motivo:`base ${base} + IVA ${iva||0} - retención ${retencion||0} = ${calc.toFixed(2)}, pero el total es ${total}`};
+  if(Array.isArray(desglose)&&desglose.length){
+    const sb=desglose.reduce((a,x)=>a+(num(x.base)||0),0);
+    const sc=desglose.reduce((a,x)=>a+(num(x.cuota)||0),0);
+    if(Math.abs(sb-base)>T)
+      return {ok:false,motivo:`el desglose suma ${sb.toFixed(2)} de base y la base declarada es ${base}`};
+    if(iva!=null&&Math.abs(sc-iva)>T)
+      return {ok:false,motivo:`el desglose suma ${sc.toFixed(2)} de cuota y el IVA declarado es ${iva}`};
+  }
+  return {ok:true};
 }
 function parseJson(txt){
   const bruto=extraerJson(txt);
@@ -1608,8 +1627,15 @@ async function procesarUno(c){
   }
   if(estadoDet==='CORRECTO'){
     if(esFactura){
-      // factura: no tiene detalle de productos. Cuadre básico: que tenga total.
-      if(total==null)estadoDet='REVISAR';
+      // Antes la única comprobación era "que tenga total", así que cualquier
+      // factura con un número salía en verde aunque los importes no cuadrasen.
+      // Así entraron seis facturas con la base mal leída sin que nadie lo viera.
+      if(total==null){
+        estadoDet='REVISAR';
+      }else{
+        const c=cuadreFactura(num(base),num(d.iva),Math.abs(num(d.retencion)||0),total,d.desglose_iva);
+        if(!c.ok){ estadoDet='NO_CUADRA'; c.motivo && console.warn('Factura no cuadra:',d.num_documento,c.motivo); }
+      }
     }else{
       // albarán: comparar suma de líneas (menos descuento) contra BASE o TOTAL (lo que haya),
       // con el mismo margen laxo que el resto de la app. Sin líneas no hay detalle que auditar.
