@@ -589,6 +589,28 @@ const CENTROS_ALIAS = {
   'BINIFADET COCINA':'COCINA PRODUCCION',
   'COCINA':'COCINA PRODUCCION'
 };
+// Busca un centro DENTRO de un texto libre ("Alquiler Datafono RTE TAMARINDOS").
+// canalCanonico exige coincidencia exacta; esto no. El orden de las reglas
+// importa: lo más específico primero, porque "BINIFADET TIENDA" contiene
+// "BINIFADET" y se iría al restaurante si preguntáramos por él antes.
+const REGLAS_CENTRO = [
+  [/COCINA|PRODUCCION/, 'COCINA PRODUCCION'],
+  [/TIENDA/,            'BINIFADET TIENDA'],
+  [/BODEGA/,            'BINIFADET BODEGA'],
+  [/TIRANT/,            'CASA TIRANT'],
+  [/TAMARINDOS.*\bBAR\b|\bBAR\b.*TAMARINDOS/, 'TAMARINDOS BAR'],
+  [/TAMARINDOS/,        'TAMARINDOS RESTAURANTE'],
+  [/BINIFADET/,         'BINIFADET RESTAURANTE'],
+  [/CENTRAL|ESTRUCTURA|OFICINA/, 'ESTRUCTURA'],
+];
+function centroDesdeTexto(txt){
+  if(!txt)return null;
+  const t=String(txt).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const exacto=canalCanonico(t);
+  if(exacto)return exacto;
+  for(const [re,centro] of REGLAS_CENTRO) if(re.test(t))return centro;
+  return null;
+}
 // Devuelve el nombre canónico del centro, o null si no se reconoce.
 // Nunca inventa: si no está en la lista ni en los alias, devuelve null para que
 // el documento salga marcado sin centro en vez de caer en uno equivocado.
@@ -686,7 +708,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v20 · Reprocesar por URL + errores visibles (05-ago-2026 12:10)');
+  console.log('Compras Bonita · v21 · propuesta automatica de reparto (05-ago-2026 12:35)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1984,6 +2006,48 @@ function activarReparto(){
   repartoFilas.forEach(r=>{r._tocada=true;});
   if(!repartoFilas.filter(r=>!r._del).length)addRep(); else renderReparto();
 }
+// Propone un reparto a partir de los conceptos ya leídos de la factura. NO lo
+// guarda: deja la tabla rellena para que la persona revise y corrija. La idea es
+// quitar el trabajo mecánico, no la decisión.
+function proponerReparto(){
+  const a=revisarDoc, base=num(a.base);
+  const fuente=revisarAlbaranes.filter(x=>!x._del && num(x.importe)!=null);
+  if(!fuente.length){toast('No hay conceptos leídos de los que partir',true);return;}
+
+  const suma=fuente.reduce((s,x)=>s+(num(x.importe)||0),0);
+  if(base!=null && Math.abs(suma-base)>0.02){
+    if(!confirm(`Los conceptos suman ${fmt(suma)} y la base es ${fmt(base)}.\n\nLa propuesta puede salir descuadrada y tendrás que ajustarla. ¿Sigo?`))return;
+  }
+
+  // Un solo tipo de IVA: se hereda. Varios: se deja en blanco a propósito, porque
+  // adivinar qué IVA lleva cada centro sería inventar.
+  const tipos=[...new Set(repartoFilas.map(r=>r.tipo_iva).filter(Boolean))];
+  const ivaUnico=(tipos.length===1)?tipos[0]:null;
+
+  const porCentro=new Map(); let sinReconocer=0, nRec=0;
+  for(const x of fuente){
+    const c=centroDesdeTexto(x.num_albaran||x.descripcion||'');
+    const k=c||'__sin__';
+    porCentro.set(k,(porCentro.get(k)||0)+(num(x.importe)||0));
+    if(c)nRec++; else sinReconocer+=(num(x.importe)||0);
+  }
+
+  const codigoDe=nombre=>{const m=mCentros.find(c=>c.canal===nombre);return m?m.codigo:null;};
+  repartoFilas=[...porCentro.entries()].map(([k,imp],i)=>({
+    base:Math.round(imp*100)/100,
+    tipo_iva:ivaUnico,
+    centro_coste:(k==='__sin__')?null:codigoDe(k),
+    cuenta_gasto:null, descripcion:(k==='__sin__')?'sin centro reconocido':k,
+    _new:true,_tocada:true
+  }));
+  modoReparto=true;
+  renderReparto();
+
+  const nCentros=[...porCentro.keys()].filter(k=>k!=='__sin__').length;
+  toast(sinReconocer>0
+    ? `Propuesta: ${nCentros} centros · ${fmt(sinReconocer)} sin reconocer, revísalo`
+    : `Propuesta: ${nCentros} centros a partir de ${nRec} conceptos`);
+}
 function cancelarReparto(){
   modoReparto=false;
   repartoFilas=repartoFilas.filter(r=>!r._new);
@@ -2001,7 +2065,11 @@ function renderReparto(){
     const centroActual=(mCentros.find(c=>c.canal===a.canal)||{}).canal||a.canal||'sin centro';
     cont.innerHTML=`<div style="font-weight:600;font-size:13px;margin-bottom:4px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Centro de coste</div>
       <p class="hint" style="margin:0 0 10px">Toda la factura va a <b>${esc(centroActual)}</b>.${nIva>1?` Se exportará en ${nIva} líneas por llevar ${nIva} tipos de IVA, todas al mismo centro.`:''}</p>
-      <span class="link" onclick="activarReparto()">↔ Repartir entre varios centros</span>`;
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <span class="link" onclick="activarReparto()">↔ Repartir entre varios centros</span>
+        ${revisarAlbaranes.filter(x=>!x._del&&num(x.importe)!=null).length
+          ? '<span class="link" onclick="proponerReparto()">✨ Proponer reparto automático</span>' : ''}
+      </div>`;
     return;
   }
   const suma=vivas.reduce((s,r)=>s+(num(r.base)||0),0);
@@ -2035,6 +2103,8 @@ function renderReparto(){
      <div style="margin-top:8px;display:flex;gap:14px;flex-wrap:wrap">
        <span class="link" onclick="addRep()">+ añadir línea</span>
        <span class="link" onclick="repartirRestante()">repartir lo que falta en la última línea</span>
+       ${revisarAlbaranes.filter(x=>!x._del&&num(x.importe)!=null).length
+         ? '<span class="link" onclick="proponerReparto()">✨ rehacer propuesta automática</span>' : ''}
        <span class="link" onclick="cancelarReparto()">cancelar</span>
      </div>${avisoCuadre}
      ${nCentros<2?'<p class="hint" style="margin:8px 0 0">Asigna un centro distinto a cada línea; las que dejes en «hereda» irán al centro de la factura.</p>':''}
