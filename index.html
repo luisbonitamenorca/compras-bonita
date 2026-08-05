@@ -582,6 +582,14 @@
 
 <script>
 /* ---------- estado ---------- */
+// NIF de la propia empresa. NUNCA puede ser el proveedor de un documento: si
+// aparece ahí es que el modelo ha cogido el NIF del cliente. Los sufijos -01 y
+// -02 sí son proveedores internos legítimos (Bodega y Producción) y se respetan.
+const NIF_PROPIO = 'B01996826';
+function esNifPropioSinSufijo(nif){
+  const k=String(nif||'').toUpperCase().replace(/[^A-Z0-9-]/g,'');
+  return k===NIF_PROPIO;
+}
 const CENTROS = ["ESTRUCTURA","BINIFADET BODEGA","BINIFADET RESTAURANTE","BINIFADET TIENDA","TAMARINDOS RESTAURANTE","TAMARINDOS BAR","CASA TIRANT","COCINA PRODUCCION"];
 // Nomenclatura antigua -> nueva. Los proveedores están pasando a rotular los
 // documentos con los nombres de A3, pero no todos a la vez, así que durante la
@@ -718,7 +726,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v28 · IVA regimen especial agrario (05-ago-2026 16:10)');
+  console.log('Compras Bonita · v30 · NIF propio nunca es proveedor (05-ago-2026 17:05)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1198,6 +1206,8 @@ Asigna "canal" SOLO si una regla, el departamento habitual del proveedor o el pr
 El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet). Si el documento no muestra el CIF pero reconoces el proveedor por la tabla de equivalencias, usa el CIF de esa tabla.
 "base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).
 
+NUESTRO NIF NO ES EL DEL PROVEEDOR. El NIF B01996826 es el de BONITA MENORCA, S.L., que es el CLIENTE en todos estos documentos. No lo devuelvas nunca como "proveedor_nif": si es el único NIF que ves, deja "proveedor_nif" en null antes que poner ese. Sí son válidos los NIF con sufijo B01996826-01 (Bodega) y B01996826-02 (Producción), que son almacenes internos que nos hacen albaranes de traspaso.
+
 CÓDIGO DE TERMINAL. Las facturas de comisiones de datáfono identifican el local con un código de comercio, que puede aparecer como "Código Cliente", "Nº de comercio", "Merchant ID" o "TID". Si lo ves, devuélvelo en "codigo_terminal" tal cual, sin inventar nada. Si no hay ninguno, pon null.
 
 CENTRO DE COSTE DENTRO DE LA FACTURA. Algunos proveedores facturan a varios de nuestros locales en un mismo documento y marcan a cuál corresponde cada parte. Ese marcador puede ir de dos formas:
@@ -1439,6 +1449,13 @@ async function procesarUno(c){
   }
   // El código del datáfono manda sobre lo que el modelo haya deducido: es un
   // dato duro del documento cruzado con nuestro maestro, no una interpretación.
+  // Si el modelo ha devuelto NUESTRO NIF como proveedor, se ignora: es el del
+  // cliente. Mejor quedarse sin NIF y que alguien lo asigne, que enganchar la
+  // factura a nuestra propia ficha y que salga mal en la exportación.
+  if(esNifPropioSinSufijo(d.proveedor_nif)){
+    console.warn('NIF propio devuelto como proveedor; se descarta:',d.proveedor);
+    d.proveedor_nif=null;
+  }
   let canal=canalDeTerminal(d.codigo_terminal)||canalCanonico(d.canal);
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
   const docTipo=(tipoUsado==='auto')?(d.tipo||'factura'):tipoUsado;
@@ -1965,6 +1982,7 @@ function renderDetalle(){
       </div>`;
     dc.querySelectorAll('.ce').forEach(el=>el.addEventListener('input',recalcAlb));
     renderReparto();
+    avisoCuadreDoc();
     return;
   }
   // ===== ALBARÁN: tabla editable de productos =====
