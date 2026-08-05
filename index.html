@@ -686,7 +686,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v19 · reparto bajo peticion + retencion (05-ago-2026 11:45)');
+  console.log('Compras Bonita · v20 · Reprocesar por URL + errores visibles (05-ago-2026 12:10)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2295,12 +2295,38 @@ async function urlABase64(url){
 // lineas y estado. Devuelve {ok, estado} o {ok:false, motivo}.
 async function reprocesarDoc(doc){
   if(!doc.imagen_url)return {ok:false,motivo:'sin foto guardada'};
-  const {b64,mime}=await urlABase64(doc.imagen_url);
   const prompt=construirPromptOCR(doc.tipo);
-  const block=mime==='application/pdf'
-    ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}
-    : {type:"image",source:{type:"base64",media_type:mime,data:b64}};
-  const d=parseJson(await callAI([block,{type:"text",text:prompt}]));
+  const esPdf=doc.imagen_url.toLowerCase().split('?')[0].endsWith('.pdf');
+
+  // El documento YA está en el bucket con URL pública, así que se manda la
+  // dirección y la API lo descarga ella. Antes se bajaba, se pasaba a base64 y
+  // se empujaba por la función de Vercel: con un PDF grande eso reventaba con un
+  // 413 y el botón "Reprocesar" parecía no hacer nada.
+  const porUrl = esPdf
+    ? {type:"document",source:{type:"url",url:doc.imagen_url}}
+    : {type:"image",source:{type:"url",url:doc.imagen_url}};
+
+  let cruda;
+  try{
+    cruda=await callAI([porUrl,{type:"text",text:prompt}]);
+  }catch(e1){
+    // Si la API no puede alcanzar la URL, se vuelve al método antiguo.
+    console.warn('Reproceso por URL falló, reintento con base64:',e1.message);
+    const {b64,mime}=await urlABase64(doc.imagen_url);
+    const block=mime==='application/pdf'
+      ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}
+      : {type:"image",source:{type:"base64",media_type:mime,data:b64}};
+    cruda=await callAI([block,{type:"text",text:prompt}]);
+  }
+
+  let d;
+  try{ d=parseJson(cruda); }
+  catch(e){
+    if(!/^SIN_JSON/.test(e.message)) throw e;
+    // Mismo reintento que en la cola: se exige JSON explícitamente.
+    const prompt2=prompt+"\n\nIMPORTANTE: responde \u00daNICAMENTE con el objeto JSON, sin texto antes ni despu\u00e9s y sin ```.";
+    d=parseJson(await callAI([porUrl,{type:"text",text:prompt2}]));
+  }
   const esFactura=(doc.tipo==='factura');
   const canal=doc.canal||null;            // se respeta el centro asignado a mano
   // red de seguridad: factura con los albaranes metidos en "lineas"
@@ -2413,7 +2439,11 @@ async function reprocesarUnoModal(){
     await loadAlbaranes();await loadFacturas();await loadCompras();
     if(res.ok){toast('Documento releído · '+(res.estado==='CORRECTO'?'ahora cuadra ✓':res.estado==='NO_CUADRA'?'sigue sin cuadrar':res.estado));await revisar(id);}
     else toast('No se pudo: '+res.motivo,true);
-  }catch(err){toast('Error: '+err.message,true);}
+  }catch(err){
+    console.error('Reprocesar falló:',err);
+    toast('No se pudo reprocesar: '+err.message,true);
+    alert('No se pudo reprocesar este documento.\n\n'+err.message);
+  }
 }
 
 /* ---------- clasificar centro desde el modal ---------- */
