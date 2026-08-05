@@ -520,7 +520,16 @@
         <div id="avisoNuevos" class="aviso" style="display:none"></div>
         <div class="barrow">
           <div class="total"><small>Proveedores</small><span id="provCount">0</span></div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input id="provBuscar" type="search" placeholder="buscar nombre, NIF, código A3…"
+                   oninput="renderProv()" style="min-width:230px">
+            <select id="provFiltro" onchange="renderProv()" style="font-size:13px">
+              <option value="">todos</option>
+              <option value="irpf">solo con IRPF</option>
+              <option value="sinirpf">con retención y SIN modelo</option>
+              <option value="sincod">sin código A3</option>
+              <option value="nuevos">pendientes de autorizar</option>
+            </select>
             <button class="btn" onclick="nuevoProveedor()">➕ Nuevo proveedor</button>
             <button class="btn ghost" onclick="importarProveedores()">⬇ Importar lista</button>
             <button class="btn ghost" onclick="loadProveedores()">↻ Refrescar</button>
@@ -709,7 +718,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v25 · modelo IRPF en ficha de proveedor (05-ago-2026 14:20)');
+  console.log('Compras Bonita · v26 · buscador y orden en proveedores (05-ago-2026 15:05)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2706,11 +2715,18 @@ function celdaIrpfProv(p){
   const opts=[['','—'],['111','111 · profesional / agrícola'],['115','115 · alquiler']]
     .map(([v,t])=>`<option value="${v}"${v===m?' selected':''}>${t}</option>`).join('');
   const pct=(p.retencion_pct!=null)?Number(p.retencion_pct):'';
-  return `<div style="display:flex;gap:4px;align-items:center;white-space:nowrap">
-      <select style="font-size:12px" onchange="saveIrpfProv('${p.id}','modelo',this.value)">${opts}</select>
-      <span class="editable" style="min-width:34px;display:inline-block;text-align:right;font-variant-numeric:tabular-nums"
+  // Fondo teñido según el estado: verde si está informado, ámbar si tiene
+  // facturas con retención y le falta el modelo. Se ve de un vistazo.
+  const falta=!m && provConRetencion.has(p.id);
+  const fondo=m?'background:var(--ok-soft);border-color:#bcd9c2'
+               :(falta?'background:#fdf3e3;border-color:#e6c98f':'');
+  return `<div style="display:inline-flex;gap:6px;align-items:center;white-space:nowrap;border:1px solid var(--line);border-radius:8px;padding:4px 8px;${fondo}">
+      <select style="font-size:13px;min-width:120px;border:0;background:transparent"
+              onchange="saveIrpfProv('${p.id}','modelo',this.value)">${opts}</select>
+      <span class="editable" style="min-width:42px;display:inline-block;text-align:right;font-variant-numeric:tabular-nums;font-size:13px"
             title="% habitual de retención" onblur="saveIrpfProv('${p.id}','pct',this.textContent)" contenteditable>${pct}</span>
-      <span style="color:var(--muted);font-size:11px">%</span></div>`;
+      <span style="color:var(--muted);font-size:12px">%</span>
+      ${falta?'<span title="Tiene facturas con retención y falta el modelo">⚠️</span>':''}</div>`;
 }
 async function saveIrpfProv(id,campo,val){
   const p=proveedores.find(x=>x.id===id); if(!p)return;
@@ -2943,16 +2959,36 @@ async function loadProveedores(){
   try{
     await cargarMaestroA3();
     proveedores=await sb('compras_proveedor?select=id,nombre,nif,departamento,cuenta_contable,cuenta_proveedor,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url,retencion_modelo,retencion_pct&order=nombre.asc');
+    try{
+      const conRet=await sbAll('compras_doc?tipo=eq.factura&retencion=gt.0&select=proveedor_id');
+      provConRetencion=new Set(conRet.map(x=>x.proveedor_id).filter(Boolean));
+    }catch(e){provConRetencion=new Set();}
     const docs=await sbAll('compras_doc?select=proveedor_id');
     const cnt={};docs.forEach(d=>{if(d.proveedor_id)cnt[d.proveedor_id]=(cnt[d.proveedor_id]||0)+1;});
     proveedores.forEach(p=>p._n=cnt[p.id]||0);
     renderProv();
   }catch(err){toast('No pude cargar proveedores: '+err.message,true);}
 }
+// Proveedores que tienen alguna factura con retención. Permite filtrar justo los
+// que bloquean la exportación por no tener modelo asignado.
+let provConRetencion=new Set();
 function renderProv(){
   let rows=[...proveedores];
+  const q=(document.getElementById('provBuscar')?.value||'').trim().toLowerCase();
+  if(q) rows=rows.filter(p=>{
+    const cod=a3CuentaACodigo[p.cuenta_proveedor]||'';
+    return [p.nombre,p.nif,p.departamento,p.cuenta_proveedor,cod,p.alias]
+      .some(v=>String(v||'').toLowerCase().includes(q));
+  });
+  const f=document.getElementById('provFiltro')?.value||'';
+  if(f==='irpf')    rows=rows.filter(p=>p.retencion_modelo);
+  if(f==='sinirpf') rows=rows.filter(p=>!p.retencion_modelo && provConRetencion.has(p.id));
+  if(f==='sincod')  rows=rows.filter(p=>!a3CuentaACodigo[p.cuenta_proveedor]);
+  if(f==='nuevos')  rows=rows.filter(p=>p.autorizado===false);
   const st=sortState.proveedores;
-  const keymap={nombre:p=>p.nombre,nif:p=>p.nif,depto:p=>p.departamento||'',crit:p=>p.critico?1:0,docs:p=>p._n};
+  const keymap={nombre:p=>p.nombre,nif:p=>p.nif,depto:p=>p.departamento||'',crit:p=>p.critico?1:0,docs:p=>p._n,
+                cta:p=>p.cuenta_contable||'',cod:p=>a3CuentaACodigo[p.cuenta_proveedor]||'',
+                irpf:p=>p.retencion_modelo||'zzz',estado:p=>p.autorizado===false?0:1};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   // aviso de proveedores nuevos sin autorizar (estilo Ratios)
   const nuevos=proveedores.filter(p=>p.autorizado===false);
@@ -2962,10 +2998,10 @@ function renderProv(){
     av.innerHTML=`⚠️ Hay ${nuevos.length} proveedor${nuevos.length>1?'es':''} nuevo${nuevos.length>1?'s':''} sin autorizar, detectado${nuevos.length>1?'s':''} al procesar documentos. Revísalos: corrige el nombre/CIF si hace falta y autorízalos.`;
   }else av.style.display='none';
   document.getElementById('headProv').innerHTML=
-    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','depto','Departamento')+'<th>Cuenta gasto</th><th>Cód. A3</th><th>IRPF</th>'+
-    thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th><th>Muestras</th>'+thh('proveedores','docs','Docs','num')+'<th>Estado</th>';
+    thh('proveedores','nombre','Nombre')+thh('proveedores','nif','CIF / NIF')+'<th>Alias / logos</th>'+thh('proveedores','depto','Departamento')+thh('proveedores','cta','Cuenta gasto')+thh('proveedores','cod','Cód. A3')+thh('proveedores','irpf','IRPF')+
+    thh('proveedores','crit','Crítico')+'<th>Pautas albarán</th><th>Pauta factura</th><th>Muestras</th>'+thh('proveedores','docs','Docs','num')+thh('proveedores','estado','Estado');
   const tb=document.getElementById('provBody');
-  document.getElementById('provCount').textContent=proveedores.length;
+  document.getElementById('provCount').textContent=(rows.length===proveedores.length)?proveedores.length:`${rows.length} / ${proveedores.length}`;
   document.getElementById('emptyP').style.display=proveedores.length?'none':'block';
   tb.innerHTML=rows.map(p=>`<tr style="${p.autorizado===false?'background:#fdf4e8':''}">
     <td><span class="editable" onblur="saveProv('${p.id}','nombre',this.textContent)" contenteditable>${p.nombre||''}</span></td>
