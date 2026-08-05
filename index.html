@@ -391,6 +391,7 @@
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="limpiarLineasFacturas()">🧹 Limpiar detalle viejo</button>
             <button class="btn ghost" onclick="detectarDuplicados('factura')">🔍 Detectar duplicados</button>
+            <button class="btn ghost" onclick="recalcularEstadosFacturas()" title="Vuelve a comprobar que los importes de cada factura cuadren, con los controles actuales">♻︎ Recalcular estados</button>
             <button class="btn ghost" onclick="loadFacturas()">↻ Refrescar</button>
             <button class="btn" onclick="exportFac()">Exportar Excel</button>
           </div>
@@ -726,7 +727,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v31 · auditoria aritmetica de facturas (05-ago-2026 17:45)');
+  console.log('Compras Bonita · v33 · recalcular estados de facturas (05-ago-2026 18:35)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1987,7 +1988,17 @@ function renderDetalle(){
         ${estBadge(a.estado_detalle)}
         ${selectCentroModal(a.canal)}
         <span class="hint" style="margin:0">${a.fecha||''} · total ${fmt(a.total)}</span></div>
-      <div style="font-size:13px;margin-bottom:12px">Base imponible: <b>${fmt(a.base)}</b></div>
+      <div style="font-size:13px;margin-bottom:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+        <span>Base: <span class="editable" style="font-weight:600;font-variant-numeric:tabular-nums"
+              onblur="saveImporteDoc('${a.id}','base',this.textContent)" contenteditable>${a.base??''}</span> €</span>
+        <span>IVA: <span class="editable" style="font-variant-numeric:tabular-nums"
+              onblur="saveImporteDoc('${a.id}','iva',this.textContent)" contenteditable>${a.iva??''}</span> €</span>
+        <span>Retención: <span class="editable" style="font-variant-numeric:tabular-nums"
+              onblur="saveImporteDoc('${a.id}','retencion',this.textContent)" contenteditable>${a.retencion??''}</span> €</span>
+        <span>Total: <span class="editable" style="font-weight:600;font-variant-numeric:tabular-nums"
+              onblur="saveImporteDoc('${a.id}','total',this.textContent)" contenteditable>${a.total??''}</span> €</span>
+        <span id="avImportes" style="font-size:12px"></span>
+      </div>
       <div style="font-weight:600;font-size:13px;margin-bottom:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Albaranes incluidos en esta factura</div>
       <table><thead><tr><th>Nº albarán</th><th>Fecha</th><th class="num">Importe</th><th></th></tr></thead><tbody>
       ${revisarAlbaranes.length?revisarAlbaranes.map((x,i)=>x._del?'':`<tr>
@@ -2008,7 +2019,7 @@ function renderDetalle(){
       </div>`;
     dc.querySelectorAll('.ce').forEach(el=>el.addEventListener('input',recalcAlb));
     renderReparto();
-    avisoCuadreDoc();
+    pintarAvisoImportes();
     return;
   }
   // ===== ALBARÁN: tabla editable de productos =====
@@ -2293,6 +2304,45 @@ async function guardarReparto(){
     renderReparto();
     loadFacturas();
   }catch(err){toast('No pude guardar el reparto: '+err.message,true);}
+}
+// Los importes de cabecera no se podían corregir a mano: si el OCR leía mal la
+// base, la factura quedaba bloqueada sin salida posible.
+async function saveImporteDoc(docId,campo,val){
+  const txt=String(val||'').trim().replace(/[€\s]/g,'').replace(',','.');
+  const v=(txt==='')?null:Number(txt);
+  if(txt!=='' && !isFinite(v)){toast('Eso no es un número',true);renderDetalle();return;}
+  try{
+    await sb(`compras_doc?id=eq.${docId}`,{method:'PATCH',body:JSON.stringify({[campo]:v})});
+    if(revisarDoc && revisarDoc.id===docId) revisarDoc[campo]=v;
+    const f=(facturas||[]).find(x=>x.id===docId)||(albaranes||[]).find(x=>x.id===docId);
+    if(f) f[campo]=v;
+    toast('Guardado');
+    renderDetalle(); loadFacturas();
+  }catch(err){toast('Error: '+err.message,true);}
+}
+// Aviso en vivo de si los importes de cabecera son coherentes entre sí.
+function pintarAvisoImportes(){
+  const el=document.getElementById('avImportes'); if(!el||!revisarDoc)return;
+  const b=num(revisarDoc.base), i=num(revisarDoc.iva)||0,
+        r=Math.abs(num(revisarDoc.retencion)||0), t=num(revisarDoc.total);
+  if(b==null||t==null){el.textContent='';return;}
+  const dif=Math.round((b+i-r-t)*100)/100;
+  el.innerHTML = Math.abs(dif)<=0.02
+    ? '<span style="color:var(--ok)">✓ cuadra</span>'
+    : `<span style="color:#b7791f">⚠️ descuadre de ${fmt(dif)}</span>`;
+}
+// El estado de una factura se fijaba al leerla y se quedaba con los controles
+// de ese día: por eso el listado podía decir CORRECTO y la exportación decir
+// bloqueada. Esto lo recalcula con los controles de hoy, en Postgres, sin
+// volver a llamar al OCR. El criterio vive en un solo sitio.
+async function recalcularEstadosFacturas(){
+  try{
+    const r=await sb('rpc/recalcular_estado_facturas',{method:'POST',body:'{}'});
+    await loadFacturas();
+    if(!r.length){ toast('Todas las facturas ya tenían el estado correcto'); return; }
+    const lista=r.slice(0,15).map(x=>`· ${x.num_documento}: ${x.estado_antes} → ${x.estado_ahora}${x.motivo?' ('+x.motivo+')':''}`).join('\n');
+    alert(`${r.length} factura(s) han cambiado de estado:\n\n${lista}${r.length>15?'\n…':''}`);
+  }catch(err){toast('No se pudo recalcular: '+err.message,true);}
 }
 function borrarLinea(i){revisarLineas[i]._del=true;renderDetalle();}
 function anadirLinea(){revisarLineas.push({id_producto:'',producto:'',cantidad:null,precio_unit:null,importe:null,_new:true});renderDetalle();}
@@ -2868,7 +2918,7 @@ async function buscarCuentaProv(id){
   const hit=await cuentaA3(p.nif,p.nombre);
   if(!hit){toast('No está en el maestro de A3. Escríbela a mano.',true);return;}
   await saveCuentaProv(id,hit.cuenta);
-  renderProveedores();
+  renderProv();   // se llamaba renderProveedores(), que no existe
   toast(`${hit.cuenta} · ${hit.nombre} (por ${hit.via})`);
 }
 async function saveCuenta(id,val){
