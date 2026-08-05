@@ -727,7 +727,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v34 · estado al vuelo al corregir importes (05-ago-2026 19:10)');
+  console.log('Compras Bonita · v35 · regenera el reparto de IVA al corregir (05-ago-2026 19:30)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2318,7 +2318,12 @@ async function saveImporteDoc(docId,campo,val){
     if(f) f[campo]=v;
     // Al corregir un importe hay que recalcular el estado: si no, la factura se
     // queda en ámbar aunque ya cuadre, y parece que el arreglo no ha servido.
-    try{ await sb('rpc/recalcular_estado_facturas',{method:'POST',body:'{}'}); }catch(e){}
+    try{
+      // Si la corrección hace que el desglose cuadre, se rehace el reparto por
+      // tipos de IVA antes de recalcular el estado.
+      await sb('rpc/regenerar_reparto_iva',{method:'POST',body:'{}'});
+      await sb('rpc/recalcular_estado_facturas',{method:'POST',body:'{}'});
+    }catch(e){}
     const fresco=await sb(`compras_doc?id=eq.${docId}&select=estado,estado_detalle`);
     if(fresco.length && revisarDoc && revisarDoc.id===docId){
       revisarDoc.estado=fresco[0].estado; revisarDoc.estado_detalle=fresco[0].estado_detalle;
@@ -2344,8 +2349,13 @@ function pintarAvisoImportes(){
 // volver a llamar al OCR. El criterio vive en un solo sitio.
 async function recalcularEstadosFacturas(){
   try{
+    // Primero se rehace el reparto por tipos de IVA de las facturas que ahora
+    // sí cuadran: si no, quedan bloqueadas por "falta desglose" teniéndolo.
+    let reg=[];
+    try{ reg=await sb('rpc/regenerar_reparto_iva',{method:'POST',body:'{}'}); }catch(e){}
     const r=await sb('rpc/recalcular_estado_facturas',{method:'POST',body:'{}'});
     await loadFacturas();
+    if(reg.length) toast(`Reparto de IVA regenerado en ${reg.length} factura(s)`);
     if(!r.length){ toast('Todas las facturas ya tenían el estado correcto'); return; }
     const lista=r.slice(0,15).map(x=>`· ${x.num_documento}: ${x.estado_antes} → ${x.estado_ahora}${x.motivo?' ('+x.motivo+')':''}`).join('\n');
     alert(`${r.length} factura(s) han cambiado de estado:\n\n${lista}${r.length>15?'\n…':''}`);
