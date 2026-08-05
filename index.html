@@ -718,7 +718,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v27 · centro por codigo de datafono (05-ago-2026 15:40)');
+  console.log('Compras Bonita · v28 · IVA regimen especial agrario (05-ago-2026 16:10)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -2078,10 +2078,15 @@ function tipoIvaDesde(base,cuota){
   const b=num(base),c=num(cuota);
   if(b==null||c==null||b===0)return null;
   const p=c/b*100;
-  if(Math.abs(p-21)<=0.5)return 'ORD21';
-  if(Math.abs(p-10)<=0.5)return 'RED10';
-  if(Math.abs(p-4)<=0.5) return 'SRE';
-  if(Math.abs(p-0)<=0.30)return 'EXE';
+  // Réplica exacta de tipo_iva_de() en Postgres. Incluye los regímenes especiales
+  // agrarios (12 % y 10,5 %), que usan los proveedores agricultores. Las
+  // tolerancias del 10 y el 10,5 son estrechas a propósito: con ±0,5 se pisaban.
+  if(Math.abs(p-21)  <=0.5) return 'ORD21';
+  if(Math.abs(p-12)  <=0.3) return 'REGESP12';
+  if(Math.abs(p-10.5)<=0.2) return 'GANPE105';
+  if(Math.abs(p-10)  <=0.2) return 'RED10';
+  if(Math.abs(p-4)   <=0.5) return 'SRE';
+  if(Math.abs(p-0)   <=0.30)return 'EXE';
   return null;
 }
 // ¿Hay de dónde sacar una propuesta? Puede venir del campo que lee el OCR o,
