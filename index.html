@@ -727,7 +727,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v35 · regenera el reparto de IVA al corregir (05-ago-2026 19:30)');
+  console.log('Compras Bonita · v36 · arreglado ReferenceError "base" que bloqueaba TODAS las facturas (07-ago-2026)');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1634,7 +1634,9 @@ async function procesarUno(c){
       if(total==null){
         estadoDet='REVISAR';
       }else{
-        const c=cuadreFactura(num(base),num(d.iva),Math.abs(num(d.retencion)||0),total,d.desglose_iva);
+        // OJO: aquí NO existe ninguna variable "base" en el ámbito (sí existe en
+        // reprocesarDoc, y de ahí vino el error). Hay que leer d.base.
+        const c=cuadreFactura(num(d.base),num(d.iva),Math.abs(num(d.retencion)||0),total,d.desglose_iva);
         if(!c.ok){ estadoDet='NO_CUADRA'; c.motivo && console.warn('Factura no cuadra:',d.num_documento,c.motivo); }
       }
     }else{
