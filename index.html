@@ -754,6 +754,29 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 /* ---------- ingesta automática desde el correo ---------- */
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
+// Adjuntos que ESTA pestaña ha reclamado y todavía no ha cerrado. Si el usuario
+// recarga o cierra la ventana a media tanda, el proceso muere pero el adjunto se
+// queda marcado PROCESANDO en la base y nadie lo vuelve a tocar hasta que caduca
+// la reclamación. Ese es el motivo real de que "no entren facturas": cada F5
+// abandonaba lo reclamado y el siguiente F5 abandonaba un poco más.
+// Al descargar la página los soltamos con fetch keepalive, que sí llega a
+// completarse aunque la pestaña se esté cerrando.
+const _misClaims=new Set();
+function soltarClaimsPendientes(){
+  if(!_misClaims.size)return;
+  for(const id of _misClaims){
+    try{
+      fetch(`${SB_URL}/rest/v1/compras_correo_adjunto?id=eq.${id}&estado=eq.PROCESANDO`,{
+        method:'PATCH',keepalive:true,
+        headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,'Content-Type':'application/json',Prefer:'return=minimal'},
+        body:JSON.stringify({estado:'PENDIENTE',claimed_at:null})});
+    }catch(e){/* la pestaña se está muriendo: no hay nada más que hacer */}
+  }
+  _misClaims.clear();
+}
+window.addEventListener('pagehide',soltarClaimsPendientes);
+window.addEventListener('beforeunload',soltarClaimsPendientes);
+
 // Solo puede haber una sincronización viva por pestaña. Sin esta guarda, pulsar
 // "Buscar facturas en el correo" mientras la automática del arranque sigue
 // trabajando haría que las dos se pisaran los adjuntos.
@@ -764,10 +787,11 @@ function estadoCorreo(txt){
 }
 // forzado=true: lo ha pedido una persona. Además de mirar el buzón, rescata los
 // adjuntos que se quedaron en PROCESANDO por un cierre de navegador a medias.
-// En automático ese rescate espera 1 h (por si otra pestaña los está trabajando
-// de verdad); en forzado basta con 10 min, porque ningún documento tarda tanto.
+// En automático el rescate espera 15 min (por si otra pestaña los está
+// trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
+// tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v37 · orden por fecha + ingesta manual de correo (07-ago-2026)');
+  console.log('Compras Bonita · v38 · los adjuntos reclamados se sueltan al recargar (07-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -780,16 +804,19 @@ async function sincronizarCorreo(forzado=false){
     estadoCorreo('Pidiendo al servidor que revise el buzón…');
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO, o de la época sin claimed_at
-    const corte=new Date(Date.now()-(forzado?600e3:3600e3)).toISOString();
+    const corte=new Date(Date.now()-(forzado?90e3:900e3)).toISOString();
     const rescatados=await sb(`compras_correo_adjunto?estado=eq.PROCESANDO&or=(claimed_at.lt.${corte},claimed_at.is.null)`,{method:'PATCH',body:JSON.stringify({estado:'PENDIENTE',claimed_at:null})}).catch(()=>[]);
-    if(rescatados.length)console.log(`${rescatados.length} adjunto(s) rescatados de PROCESANDO`);
+    if(rescatados.length){
+      console.log(`${rescatados.length} adjunto(s) rescatados de PROCESANDO`);
+      estadoCorreo(`${rescatados.length} adjunto(s) atascados devueltos a la cola…`);
+    }
     // procesar por lotes hasta vaciar los pendientes (máx. 10 lotes por sesión)
     for(let ciclo=0;ciclo<10;ciclo++){
       const n=await cargarLoteCorreo();
       if(!n)break;
       procesados+=n;
       renderQueue();
-      estadoCorreo(`Procesando ${procesados} documento${procesados>1?'s':''} del correo…`);
+      estadoCorreo(`Procesando ${procesados} documento${procesados>1?'s':''} del correo… no recargues la página.`);
       toast(`\u{1F4E7} ${n} documento${n>1?'s':''} recibido${n>1?'s':''} por correo · procesando…`);
       await procesarCola(true);
     }
@@ -819,6 +846,7 @@ async function cargarLoteCorreo(){
       // reclamar el adjunto: si otro navegador lo cogió primero, el PATCH no devuelve fila
       const claim=await sb(`compras_correo_adjunto?id=eq.${a.id}&estado=eq.PENDIENTE`,{method:'PATCH',body:JSON.stringify({estado:'PROCESANDO',claimed_at:new Date().toISOString()})});
       if(!claim.length)continue;
+      _misClaims.add(a.id);   // esta pestaña responde de él hasta cerrarlo
       try{
         const r=await fetch(a.url);
         if(!r.ok)throw new Error('descarga '+r.status);
@@ -852,6 +880,7 @@ async function cargarLoteCorreo(){
           ? {estado:'PENDIENTE',claimed_at:null,error:'reintentable: '+msg}
           : {estado:'ERROR',error:msg};
         await sb(`compras_correo_adjunto?id=eq.${a.id}`,{method:'PATCH',body:JSON.stringify(cambio)}).catch(()=>{});
+        _misClaims.delete(a.id);   // ya tiene estado final: esta pestaña se desentiende
       }
     }
     return n;
@@ -1165,6 +1194,10 @@ async function procesarCola(auto){
         c.status='fail';c.error=msg;fail++;console.error(err);marcarAdjuntoError(c);
       }
     }
+    // Terminado (bien o mal), procesarUno/marcarAdjuntoError ya le han dejado un
+    // estado final en la base. Esta pestaña deja de responder de él, para que un
+    // cierre posterior no lo devuelva a la cola cuando ya está resuelto.
+    if(c.correoAdjId)_misClaims.delete(c.correoAdjId);
     renderQueue();
     // pausa entre documentos (no tras el último), con cuenta atrás visible
     if(i<pendientes.length-1){
