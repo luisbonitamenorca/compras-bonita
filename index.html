@@ -307,6 +307,16 @@
           <button id="clrBtn" class="btn ghost" style="display:none" onclick="limpiarCola()">Limpiar</button>
         </div>
       </div>
+
+      <div class="panel" style="margin-top:18px">
+        <div class="barrow">
+          <div>
+            <div style="font-weight:600;margin-bottom:2px">Facturas por correo</div>
+            <div class="fld" id="correoEstado" style="margin:0">Al abrir la app se revisa el buzón sola. Aquí puedes forzarlo.</div>
+          </div>
+          <button id="btnForzarCorreo" class="btn ghost" onclick="forzarIngestaCorreo()">📧 Buscar facturas en el correo</button>
+        </div>
+      </div>
     </section>
 
     <!-- COMPRAS -->
@@ -649,15 +659,33 @@ let centrosPorFactura={};   // doc_id -> {n_centros, centros}   // documento abi
 
 /* ---------- ordenación genérica de tablas ---------- */
 const sortState={compras:{key:null,dir:1},albaranes:{key:null,dir:1},facturas:{key:null,dir:1},proveedores:{key:null,dir:1},productos:{key:null,dir:1},conciliacion:{key:null,dir:1}};
+// Las columnas de fecha NO se ordenaban. El motivo: parseFloat("2026-07-31")
+// devuelve 2026 sin quejarse, así que el comparador las tomaba por números y
+// todas las filas del mismo año empataban a 2026. Igual con created_at
+// ("2026-08-05T14:40:12+00" -> 2026). De ahí que ordenase todo menos Fecha y
+// Cargado. Ahora las fechas ISO se detectan y se comparan como texto, que en
+// formato ISO ya es orden cronológico, y solo se tratan como número las
+// cadenas que son un número entero.
+const RX_FECHA_ISO=/^\d{4}-\d{2}-\d{2}([T ].*)?$/;
+const RX_NUM_PURO=/^-?\d+(?:[.,]\d+)?$/;
 function sortRows(rows,key,dir){
   if(!key)return rows;
   return [...rows].sort((a,b)=>{
     let va=key(a),vb=key(b);
     if(va==null)va='';if(vb==null)vb='';
-    const na=parseFloat(String(va).replace(',','.')), nb=parseFloat(String(vb).replace(',','.'));
-    const bothNum=!isNaN(na)&&!isNaN(nb)&&String(va).trim()!==''&&String(vb).trim()!=='';
-    if(bothNum){return (na-nb)*dir;}
-    return String(va).localeCompare(String(vb),'es',{numeric:true})*dir;
+    const sa=String(va).trim(), sb=String(vb).trim();
+    // 1) fechas ISO: comparación textual = comparación cronológica
+    if(RX_FECHA_ISO.test(sa)&&RX_FECHA_ISO.test(sb))
+      return (sa<sb?-1:sa>sb?1:0)*dir;
+    // los vacíos siempre al final, mande la dirección que mande
+    if(sa===''&&sb==='')return 0;
+    if(sa==='')return 1;
+    if(sb==='')return -1;
+    // 2) números de verdad (la cadena entera es un número, no algo que empieza por dígitos)
+    if(RX_NUM_PURO.test(sa)&&RX_NUM_PURO.test(sb))
+      return (parseFloat(sa.replace(',','.'))-parseFloat(sb.replace(',','.')))*dir;
+    // 3) el resto, alfabético con sensibilidad numérica ("Nº 9" antes que "Nº 10")
+    return sa.localeCompare(sb,'es',{numeric:true})*dir;
   });
 }
 // genera el HTML de una cabecera ordenable
@@ -726,24 +754,62 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 /* ---------- ingesta automática desde el correo ---------- */
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
-async function sincronizarCorreo(){
-  console.log('Compras Bonita · v36 · arreglado ReferenceError "base" que bloqueaba TODAS las facturas (07-ago-2026)');
+// Solo puede haber una sincronización viva por pestaña. Sin esta guarda, pulsar
+// "Buscar facturas en el correo" mientras la automática del arranque sigue
+// trabajando haría que las dos se pisaran los adjuntos.
+let _sincronizando=false;
+function estadoCorreo(txt){
+  const el=document.getElementById('correoEstado');
+  if(el)el.textContent=txt;
+}
+// forzado=true: lo ha pedido una persona. Además de mirar el buzón, rescata los
+// adjuntos que se quedaron en PROCESANDO por un cierre de navegador a medias.
+// En automático ese rescate espera 1 h (por si otra pestaña los está trabajando
+// de verdad); en forzado basta con 10 min, porque ningún documento tarda tanto.
+async function sincronizarCorreo(forzado=false){
+  console.log('Compras Bonita · v37 · orden por fecha + ingesta manual de correo (07-ago-2026)');
+  if(_sincronizando){
+    if(forzado)toast('Ya hay una revisión del correo en marcha');
+    return;
+  }
+  _sincronizando=true;
+  const btn=document.getElementById('btnForzarCorreo');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Revisando el buzón…';}
+  let procesados=0;
   try{
+    estadoCorreo('Pidiendo al servidor que revise el buzón…');
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
-    // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
-    // reclamados hace más de 1h, o de la época sin claimed_at
-    const hace1h=new Date(Date.now()-3600e3).toISOString();
-    await sb(`compras_correo_adjunto?estado=eq.PROCESANDO&or=(claimed_at.lt.${hace1h},claimed_at.is.null)`,{method:'PATCH',body:JSON.stringify({estado:'PENDIENTE'})}).catch(()=>{});
+    // rescatar adjuntos atascados en PROCESANDO, o de la época sin claimed_at
+    const corte=new Date(Date.now()-(forzado?600e3:3600e3)).toISOString();
+    const rescatados=await sb(`compras_correo_adjunto?estado=eq.PROCESANDO&or=(claimed_at.lt.${corte},claimed_at.is.null)`,{method:'PATCH',body:JSON.stringify({estado:'PENDIENTE',claimed_at:null})}).catch(()=>[]);
+    if(rescatados.length)console.log(`${rescatados.length} adjunto(s) rescatados de PROCESANDO`);
     // procesar por lotes hasta vaciar los pendientes (máx. 10 lotes por sesión)
     for(let ciclo=0;ciclo<10;ciclo++){
       const n=await cargarLoteCorreo();
       if(!n)break;
+      procesados+=n;
       renderQueue();
+      estadoCorreo(`Procesando ${procesados} documento${procesados>1?'s':''} del correo…`);
       toast(`\u{1F4E7} ${n} documento${n>1?'s':''} recibido${n>1?'s':''} por correo · procesando…`);
       await procesarCola(true);
     }
-  }catch(err){console.warn('sincronizarCorreo:',err.message);}
+    if(procesados){
+      estadoCorreo(`Última revisión: ${new Date().toLocaleTimeString('es-ES')} · ${procesados} documento${procesados>1?'s':''} procesado${procesados>1?'s':''}.`);
+      if(forzado){loadFacturas();loadAlbaranes();loadCompras();}
+    }else{
+      estadoCorreo(`Última revisión: ${new Date().toLocaleTimeString('es-ES')} · no había nada nuevo.`);
+      if(forzado)toast('No hay documentos nuevos en el correo');
+    }
+  }catch(err){
+    console.warn('sincronizarCorreo:',err.message);
+    estadoCorreo('La revisión del correo falló: '+err.message);
+    if(forzado)toast('⚠️ No se pudo revisar el correo: '+err.message,true);
+  }finally{
+    _sincronizando=false;
+    if(btn){btn.disabled=false;btn.textContent='📧 Buscar facturas en el correo';}
+  }
 }
+function forzarIngestaCorreo(){ sincronizarCorreo(true); }
 // carga un lote de adjuntos PENDIENTES en la cola; devuelve cuántos ha reclamado
 async function cargarLoteCorreo(){
     const pend=await sb('compras_correo_adjunto?estado=eq.PENDIENTE&select=id,nombre_archivo,mime,url,error&order=created_at.asc&limit=20');
