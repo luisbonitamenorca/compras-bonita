@@ -727,7 +727,7 @@ function resync(){loadReglas();loadCompras();loadAlbaranes();loadFacturas();load
 // 1) pide al servidor que revise el buzón facturas@ (IMAP) y descargue adjuntos nuevos
 // 2) carga los adjuntos PENDIENTES y los procesa con el pipeline de siempre
 async function sincronizarCorreo(){
-  console.log('Compras Bonita · v36 · CUPS de electricidad -> centro (05-ago-2026 20:10)');
+  console.log('Compras Bonita · build 2026-08-09 12:55 · arreglado procesado de facturas + CUPS');
   try{
     try{await fetch('/api/ingesta-correo',{method:'POST'});}catch(e){console.warn('ingesta correo:',e.message);}
     // rescatar adjuntos atascados en PROCESANDO (navegador cerrado a medias):
@@ -1636,7 +1636,7 @@ async function procesarUno(c){
       if(total==null){
         estadoDet='REVISAR';
       }else{
-        const c=cuadreFactura(num(base),num(d.iva),Math.abs(num(d.retencion)||0),total,d.desglose_iva);
+        const c=cuadreFactura(num(d.base),num(d.iva),Math.abs(num(d.retencion)||0),total,d.desglose_iva);
         if(!c.ok){ estadoDet='NO_CUADRA'; c.motivo && console.warn('Factura no cuadra:',d.num_documento,c.motivo); }
       }
     }else{
