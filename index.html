@@ -961,7 +961,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v50 · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v51 · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -1806,8 +1806,11 @@ async function procesarUno(c){
     // ¿lo conoce A3? entonces ya nace con su cuenta puesta
     const a3=await cuentaA3(d.proveedor_nif,d.proveedor);
     const np=await sb('compras_proveedor',{method:'POST',body:JSON.stringify({
+      // nombre_norm y nif_norm NO se envían: los calcula un trigger con las
+      // funciones de Postgres. Escribirlos desde aquí fue lo que dejó 38 fichas
+      // con claves mal normalizadas cuando normName() tenía el fallo del "S.L.",
+      // y una casando con una cuenta de A3 que no le correspondía.
       nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,
-      nif_norm:normNif(d.proveedor_nif),nombre_norm:normName(d.proveedor),
       cuenta_proveedor:a3?a3.cuenta:null,
       cuenta_contable:a3?a3.contrapartida:null,
       autorizado:false})});
@@ -3772,7 +3775,7 @@ function nuevoProveedor(){
     if(!nombre){toast('El nombre es obligatorio',true);ov.querySelector('#npNombre').focus();return;}
     try{
       await sb('compras_proveedor',{method:'POST',body:JSON.stringify({
-        nombre,nif:nif||null,nif_norm:normNif(nif),nombre_norm:normName(nombre),
+        nombre,nif:nif||null,
         departamento:depto||null,cuenta_contable:cuenta||null,autorizado:true})});
       cerrar();toast('Proveedor creado');await loadProveedores();
     }catch(err){
@@ -4147,7 +4150,7 @@ async function importarProveedores(){
     try{
       const np=await sb('compras_proveedor',{method:'POST',body:JSON.stringify({
         nombre:s.nombre,nif:s.nif||null,critico:!!s.critico,pautas:s.pautas||null,
-        nif_norm:normNif(s.nif),nombre_norm:normName(s.nombre),autorizado:true})});
+        autorizado:true})});
       proveedores.push({id:np[0].id,nombre:s.nombre,nif:s.nif,critico:!!s.critico,pautas:s.pautas,autorizado:true,_n:0});
       nuevos++;
     }catch(e){console.warn('import',s.nombre,e.message);}
