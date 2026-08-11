@@ -791,7 +791,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v40 · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v40.1 · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -2159,18 +2159,18 @@ function bloqueDesgloseIva(){
   const malB=(difB!=null&&Math.abs(difB)>0.02);
   const malC=(difC!=null&&Math.abs(difC)>0.02);
   const sinCod=filas.some(f=>!f.cod);
-  const rotulo={reparto:'tal como se exportara a A3',
-                ocr:'leido de la factura · aun sin reparto contable guardado',
-                deducido:'deducido de base y cuota · el OCR no leyo el cuadro de IVA'}[fuente]||'';
+  const rotulo={reparto:'tal como se exportará a A3',
+                ocr:'leído de la factura · aún sin reparto contable guardado',
+                deducido:'deducido de base y cuota · el OCR no leyó el cuadro de IVA'}[fuente]||'';
   const avisos=[];
   if(malB)avisos.push(`las bases suman ${fmt(sumaB)} y la base declarada es ${fmt(b)} · ${difB>0?'sobran':'faltan'} ${fmt(Math.abs(difB))}`);
   if(malC)avisos.push(`las cuotas suman ${fmt(sumaC)} y el IVA declarado es ${fmt(i)} · ${difC>0?'sobran':'faltan'} ${fmt(Math.abs(difC))}`);
-  if(sinCod)avisos.push('hay lineas sin tipo de IVA reconocido: A3 no las admite asi');
+  if(sinCod)avisos.push('hay líneas sin tipo de IVA reconocido: A3 no las admite así');
   const nTipos=new Set(filas.map(f=>f.cod).filter(Boolean)).size;
   const varios=nTipos>1;
   const aviso = avisos.length
     ? `<div class="aviso" style="margin-top:8px">&#9888;&#65039; ${avisos.join('<br>')}</div>`
-    : (varios?`<div class="aviso" style="margin-top:8px;background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)">&#10003; El desglose cuadra con la base y el IVA de arriba</div>`:'');
+    : (filas.length>1?`<div class="aviso" style="margin-top:8px;background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)">&#10003; El desglose cuadra con la base y el IVA de arriba</div>`:'');
   return `<div style="margin-bottom:16px">
     <div style="font-weight:600;font-size:13px;margin-bottom:6px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
       Desglose de IVA${varios?` · ${nTipos} tipos`:''}${filas.length>nTipos?` · ${filas.length} líneas`:''}</div>
@@ -2201,11 +2201,11 @@ function motivoEstado(a){
                             (a.raw&&a.raw.desglose_iva)||null);
       return c.ok?'':('No cuadra: '+c.motivo);
     }
-    return 'La suma de las lineas no cuadra con la base ni con el total.';
+    return 'La suma de las líneas no cuadra con la base ni con el total.';
   }
   if(a.estado_detalle==='REVISAR'){
     if(a.tipo!=='factura'&&!(revisarLineas||[]).length)
-      return 'Sin lineas de detalle que auditar: revisa contra la foto.';
+      return 'Sin líneas de detalle que auditar: revisa contra la foto.';
     if(num(a.total)==null)return 'Sin total leido.';
     return 'Marcado para revisar al cargarlo.';
   }
