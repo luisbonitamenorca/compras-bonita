@@ -946,7 +946,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v45 · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v46 · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -1928,6 +1928,10 @@ async function procesarUno(c){
 
   // 4) documento
   const doc=await sb('compras_doc',{method:'POST',body:JSON.stringify({
+    // proveedor: se manda lo leído sólo como respaldo por si no hay ficha; si la
+    // hay, un trigger lo sustituye por el nombre del maestro. Guardar la lectura
+    // del OCR aquí producía 187 grafías para 130 proveedores y hacía inútiles los
+    // desplegables de filtro. El texto original sigue íntegro en raw.
     tipo:docTipo,fecha:d.fecha||null,proveedor:d.proveedor||null,proveedor_nif:d.proveedor_nif||null,
     proveedor_id,num_documento:d.num_documento||null,canal,base:num(d.base),iva:num(d.iva),total,descuento:num(d.descuento),
     // Retención siempre en positivo: aunque el documento la imprima en negativo,
