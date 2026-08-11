@@ -716,6 +716,21 @@ function thh(tabla,colKey,label,extraClass){
    Cada caja lleva además la lista de valores presentes, así que se puede elegir
    en vez de teclear.                                                          */
 let colFiltros={};
+/* Lo que hay REALMENTE pintado en cada listado, después de TODOS los filtros.
+   Existe porque currentProd()/currentRows() sólo aplican los filtros de la
+   cabecera de la pestaña y no los de columna: con la lista filtrada a 4
+   productos, "borrar los que no se usan" apuntaba a los 274 de todo el
+   catálogo. Cualquier acción en bloque y cualquier exportación tienen que
+   operar sobre esto, no sobre el array completo.                            */
+let visibles={compras:[],albaranes:[],facturas:[],productos:[],proveedores:[]};
+function registraVisibles(tabla,rows){visibles[tabla]=rows;return rows;}
+// ¿está la lista realmente acotada? Sirve para no permitir borrados masivos
+// sobre "todo" por accidente.
+function hayFiltroActivo(tabla,total){
+  const f=colFiltros[tabla]||{};
+  const cols=Object.keys(f).some(k=>String(f[k]||'').trim()!=='');
+  return cols || (visibles[tabla]||[]).length < total;
+}
 function normFiltro(v){
   return String(v==null?'':v).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
 }
@@ -946,7 +961,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v48 · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v50 · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -2011,6 +2026,7 @@ function renderTable(){
     thh('compras','fecha','Fecha','fecha')+thh('compras','prov','Proveedor')+thh('compras','cod','Ref. prov.')+thh('compras','codapp','Cód. App')+thh('compras','prod','Producto')+
     thh('compras','nalb','Nº albarán')+thh('compras','cant','Cant.','num')+thh('compras','imp','Importe','num')+
     thh('compras','canal','Centro')+thh('compras','estado','Estado')+'<th></th>';
+  registraVisibles('compras',rows);
   pintaFiltros('compras','fltCompras',['fecha','prov','cod','codapp','prod','nalb','cant','imp','canal','estado',null],todas,keymap,'renderTable');
   const tb=document.getElementById('tbody');
   document.getElementById('emptyC').style.display=rows.length?'none':'block';
@@ -2037,7 +2053,7 @@ function exportXlsx(){
   // Este fichero alimenta Ratios. La clave para clasificar por familia y
   // subfamilia es "Cód. App": la referencia del proveedor no vale porque el
   // mismo producto lleva codigos distintos segun quien lo sirva.
-  const filas=currentRows();
+  const filas=(visibles.compras||[]);
   const rows=filas.map(r=>{const dc=r.compras_doc||{};return{
     Fecha:dc.fecha||'',Proveedor:dc.proveedor||'','Nº albarán':dc.num_documento||'',
     'ID producto':r.id_producto||'',
@@ -2073,6 +2089,7 @@ function renderAlb(){
   const todas=rows;
   rows=aplicaColFiltros('albaranes',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  registraVisibles('albaranes',rows);
   pintaFiltros('albaranes','fltAlb',['fecha','cargado','prov','ndoc','centro','base','iva','reten','total','estado',null,null],todas,keymap,'renderAlb');
   document.getElementById('headAlb').innerHTML=
     thh('albaranes','fecha','Fecha','fecha')+thh('albaranes','cargado','Cargado')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
@@ -2089,7 +2106,9 @@ function renderAlb(){
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
 }
 function exportAlb(){
-  let rows=[...albaranes];
+  // lo que se exporta es lo que se ve: si hay filtros de columna puestos, el
+  // Excel debe llevar eso y no el listado entero
+  let rows=[...(visibles.albaranes||albaranes)];
   const st=sortState.albaranes;
   const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
@@ -2219,6 +2238,7 @@ function renderFac(){
   const todas=rows;
   rows=aplicaColFiltros('facturas',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  registraVisibles('facturas',rows);
   pintaFiltros('facturas','fltFac',['fecha','cargado','prov','ndoc','centro','base','iva','reten','total','estado','a3',null,null],todas,keymap,'renderFac');
   document.getElementById('headFac').innerHTML=
     thh('facturas','fecha','Fecha','fecha')+thh('facturas','cargado','Cargado')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
@@ -2258,7 +2278,7 @@ async function saveDocCanal(docId,val){
   }catch(err){toast('Error: '+err.message,true);}
 }
 function exportFac(){
-  let rows=[...facturas];
+  let rows=[...(visibles.facturas||facturas)];
   const st=sortState.facturas;
   const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
@@ -3123,27 +3143,75 @@ async function fusionarDupProd(vive,muere){
 }
 // Fusión a mano desde el propio listado: se marcan dos filas y se unen.
 let selProd=[];
+// La selección ya no se limita a dos: con dos del mismo proveedor se puede
+// fusionar, y con cualquier número se pueden borrar los que no tengan uso.
 function marcarProd(id,ev){
   if(ev)ev.stopPropagation();
   const i=selProd.indexOf(id);
   if(i>=0)selProd.splice(i,1); else selProd.push(id);
-  if(selProd.length>2)selProd.shift();
   renderProd();
 }
+function marcarTodosVisibles(soloSinUso){
+  const vis=(visibles.productos||[]);
+  const ids=vis.filter(p=>!soloSinUso||(p.n_albaranes||0)===0).map(p=>p.id);
+  // si ya están todos marcados, el clic los desmarca
+  const todos=ids.length && ids.every(id=>selProd.includes(id));
+  selProd = todos ? selProd.filter(id=>!ids.includes(id))
+                  : [...new Set([...selProd,...ids])];
+  renderProd();
+}
+// Borra los marcados que no tengan uso. Los que tengan historial se saltan y se
+// dicen por su nombre: borrarlos falsearía el consumo y lo que se quiere ahí es
+// fusionar.
+async function borrarSeleccionados(){
+  const sel=selProd.map(id=>productos.find(p=>p.id===id)).filter(Boolean);
+  const borrables=sel.filter(p=>(p.n_albaranes||0)===0);
+  const conUso=sel.filter(p=>(p.n_albaranes||0)>0);
+  if(!borrables.length){toast('Ninguno de los marcados está sin uso',true);return;}
+  const muestra=borrables.slice(0,12).map(p=>`  · ${p.codigo_interno} ${p.nombre}`).join('\n');
+  if(!confirm(`Se van a borrar ${borrables.length} producto${borrables.length===1?'':'s'} marcado${borrables.length===1?'':'s'} sin uso:\n\n`
+    +muestra+(borrables.length>12?`\n  … y ${borrables.length-12} más`:'')
+    +(conUso.length?`\n\nSe saltan ${conUso.length} que sí tienen historial de compras.`:'')
+    +`\n\n¿Continuar?`))return;
+  let ok=0,fail=0;
+  for(const p of borrables){
+    try{ await sb('rpc/borrar_producto',{method:'POST',body:JSON.stringify({p_id:p.id})}); ok++; }
+    catch(e){ fail++; console.warn('no se pudo borrar',p.codigo_interno,e.message); }
+  }
+  toast(fail?`${ok} borrados · ${fail} no se pudieron (ver consola)`:`${ok} producto${ok===1?'':'s'} borrado${ok===1?'':'s'}`);
+  selProd=[]; await loadProductos(); await loadCompras();
+}
 function barraSelProd(){
-  if(selProd.length<2)return selProd.length===1
-    ? '<div class="hint" style="margin-bottom:8px">1 producto marcado · marca otro del MISMO proveedor para fusionarlos</div>' : '';
-  const a=productos.find(p=>p.id===selProd[0]), b=productos.find(p=>p.id===selProd[1]);
-  if(!a||!b)return '';
-  const mismo=(a.proveedor_id===b.proveedor_id);
-  return `<div class="aviso" style="margin-bottom:8px;${mismo?'':'background:var(--warn-soft);border-color:#e8cfa0;color:var(--warn)'}">
-    <div><b>${esc(a.codigo_interno)}</b> ${esc(a.nombre)} &nbsp;⟷&nbsp; <b>${esc(b.codigo_interno)}</b> ${esc(b.nombre)}</div>
-    ${mismo?`<div style="margin-top:6px;display:flex;gap:10px">
-       <button class="btn ghost" style="font-size:12px;padding:4px 10px" onclick="fusionarProdSel(0)">conservar ${esc(a.codigo_interno)}</button>
-       <button class="btn ghost" style="font-size:12px;padding:4px 10px" onclick="fusionarProdSel(1)">conservar ${esc(b.codigo_interno)}</button>
-       <span class="link" onclick="selProd=[];renderProd()">cancelar</span></div>`
-     :`<div style="margin-top:4px">Son de proveedores distintos: en este modelo cada proveedor tiene su propio producto, así que no se pueden unir.
-        <span class="link" onclick="selProd=[];renderProd()">cancelar</span></div>`}</div>`;
+  const vis=(visibles.productos||[]);
+  const nVis=vis.length;
+  const marcarTodo=nVis?`<span class="link" onclick="marcarTodosVisibles(false)">marcar los ${nVis} de la lista</span>`:'';
+  if(!selProd.length)
+    return nVis?`<div class="hint" style="margin-bottom:8px">Marca productos para borrarlos o fusionarlos · ${marcarTodo}</div>`:'';
+
+  const sel=selProd.map(id=>productos.find(p=>p.id===id)).filter(Boolean);
+  const sinUso=sel.filter(p=>(p.n_albaranes||0)===0).length;
+  const conUso=sel.length-sinUso;
+
+  // dos del mismo proveedor: además se pueden fusionar
+  let bloqueFusion='';
+  if(sel.length===2){
+    const [a,b]=sel;
+    bloqueFusion = (a.proveedor_id===b.proveedor_id)
+      ? `<div style="margin-top:6px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+           <span class="hint" style="margin:0">Fusionar:</span>
+           <button class="btn ghost" style="font-size:12px;padding:4px 10px" onclick="fusionarProdSel(0)">conservar ${esc(a.codigo_interno)} · ${esc(a.nombre)}</button>
+           <button class="btn ghost" style="font-size:12px;padding:4px 10px" onclick="fusionarProdSel(1)">conservar ${esc(b.codigo_interno)} · ${esc(b.nombre)}</button>
+         </div>`
+      : `<div class="hint" style="margin-top:6px">Para fusionarlos tendrían que ser del mismo proveedor.</div>`;
+  }
+  return `<div class="aviso" style="margin-bottom:8px;background:var(--paper);color:var(--ink)">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <b>${sel.length} marcado${sel.length===1?'':'s'}</b>
+      ${sinUso?`<button class="btn ghost" style="font-size:12px;padding:4px 10px" onclick="borrarSeleccionados()">🗑 borrar ${sinUso} sin uso</button>`:''}
+      ${conUso?`<span class="hint" style="margin:0">${conUso} con historial no se borrarán</span>`:''}
+      ${marcarTodo}
+      <span class="link" onclick="selProd=[];renderProd()">quitar marcas</span>
+    </div>${bloqueFusion}</div>`;
 }
 async function fusionarProdSel(cual){
   if(selProd.length!==2)return;
@@ -3190,8 +3258,16 @@ async function borrarProducto(id){
 // propósito: obliga a filtrar y mirar antes, en vez de barrer 264 fichas de una
 // vez sin haberlas repasado.
 async function borrarSinUsoVisibles(){
-  const vis=currentProd().filter(p=>(p.n_albaranes||0)===0);
+  // visibles.productos son las filas realmente pintadas, con los filtros de
+  // columna aplicados. Antes se usaba currentProd(), que los ignora, y por eso
+  // con 4 productos en pantalla proponía borrar 274.
+  const vis=(visibles.productos||[]).filter(p=>(p.n_albaranes||0)===0);
   if(!vis.length){toast('No hay productos sin uso entre los que estás viendo',true);return;}
+  // Red de seguridad: borrar en bloque exige haber acotado la lista antes.
+  if(!hayFiltroActivo('productos',productos.length)){
+    toast('Filtra primero (por proveedor, por nombre…): el borrado en bloque solo actúa sobre una lista acotada',true);
+    return;
+  }
   const muestra=vis.slice(0,12).map(p=>`  · ${p.codigo_interno} ${p.nombre}`).join('\n');
   if(!confirm(`Se van a borrar ${vis.length} producto${vis.length===1?'':'s'} que no aparecen en ningún albarán:\n\n`
     +muestra+(vis.length>12?`\n  … y ${vis.length-12} más`:'')
@@ -3225,6 +3301,7 @@ function renderProd(){
   const todas=rows;
   rows=aplicaColFiltros('productos',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  registraVisibles('productos',rows);
   pintaFiltros('productos','fltProd',[null,'cod','prod','ref','prov','cif','veces','ultima','precio','medio',null],todas,keymap,'renderProd');
   renderDupProd();
   document.getElementById('headProd').innerHTML=
@@ -3237,10 +3314,14 @@ function renderProd(){
   const bs=document.getElementById('selProdBar');
   if(bs){
     const nSin=rows.filter(p=>(p.n_albaranes||0)===0).length;
+    const acotada=hayFiltroActivo('productos',productos.length);
     const avisoSin=(nSin>1)
       ? `<div class="hint" style="margin-bottom:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-           <span>${nSin} de los ${rows.length} que estás viendo no aparecen en ningún albarán.</span>
-           <span class="link" onclick="borrarSinUsoVisibles()">borrar esos ${nSin}</span></div>` : '';
+           <span>${nSin} de los ${rows.length} de esta lista no aparecen en ningún albarán.</span>
+           <span class="link" onclick="marcarTodosVisibles(true)">marcar esos ${nSin}</span>
+           ${acotada
+             ? `<span class="link" onclick="borrarSinUsoVisibles()">o borrarlos ya</span>`
+             : '<span style="opacity:.5">filtra la lista para borrarlos de golpe</span>'}</div>` : '';
     bs.innerHTML=avisoSin+barraSelProd();
   }
   tb.innerHTML=rows.map(p=>`<tr${selProd.includes(p.id)?' style="background:var(--ok-soft)"':''}>
@@ -3269,7 +3350,7 @@ async function saveProd(id,campo,val){
   catch(err){toast('Error: '+err.message,true);loadProductos();}
 }
 function exportProd(){
-  const rows=currentProd().map(p=>({
+  const rows=(visibles.productos||[]).map(p=>({
     'Código interno':p.codigo_interno||'','Producto':p.nombre||'','Ref. proveedor':p.ref_proveedor||'',
     'Proveedor':p.prov_nombre||'','CIF':p.prov_nif||'','Último precio':p.ultimo_precio??'','Precio medio 12m':p.precio_medio!=null?Math.round(p.precio_medio*100)/100:''}));
   if(!rows.length){toast('No hay productos que exportar',true);return;}
@@ -3855,6 +3936,7 @@ function renderProv(){
   const todas=rows;
   rows=aplicaColFiltros('proveedores',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  registraVisibles('proveedores',rows);
   pintaFiltros('proveedores','fltProv',
     ['nombre','nif',null,'depto','cta','cod','irpf','crit',null,null,null,'docs','estado'],
     todas,keymap,'renderProv');
