@@ -729,15 +729,23 @@ function firmaDup(numDoc,fecha,total){
    juzgar (NIF de persona física o NIE, que usan otro algoritmo): null significa
    "no lo sé", nunca "está mal".                                              */
 function cifValido(cif){
-  if(cif==null)return null;
-  const c=String(cif).toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(cif==null||!String(cif).trim())return null;
+  let c=String(cif).trim().toUpperCase();
+  // sub-CIF interno (B01996826-01): se juzga la matriz
+  if(/^[ABCDEFGHJNPQRSUVW][0-9]{7}[0-9A-J]-[0-9]+$/.test(c))c=c.split('-')[0];
+  c=c.replace(/[^A-Z0-9]/g,'');
+  // prefijo ES de IVA intracomunitario
+  if(/^ES[A-Z0-9]{9}$/.test(c))c=c.slice(2);
+  // VAT de otro pais: no se juzga
+  if(/^[A-Z]{2}[0-9]/.test(c)&&!/^ES/.test(c))return null;
+  // persona fisica (NIF o NIE): otro algoritmo
   if(/^[0-9]{8}[A-Z]$/.test(c)||/^[XYZ][0-9]{7}[A-Z]$/.test(c))return null;
   if(!/^[ABCDEFGHJNPQRSUVW][0-9]{7}[0-9A-J]$/.test(c))return false;
   const d=c.slice(1,8);
   let suma=0;
   for(let i=0;i<7;i++){
     const n=Number(d[i]);
-    if(i%2===0){const x=n*2;suma+=Math.floor(x/10)+(x%10);}   // posiciones impares
+    if(i%2===0){const x=n*2;suma+=Math.floor(x/10)+(x%10);}
     else suma+=n;
   }
   const ctrl=(10-(suma%10))%10;
@@ -745,6 +753,7 @@ function cifValido(cif){
   const dado=c[8];
   return dado===String(ctrl)||dado===letra;
 }
+
 function normName(s){
   if(!s)return '';
   s=String(s).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
@@ -830,7 +839,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v43 · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v44 · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -1566,9 +1575,12 @@ async function guardarLineasDoc(docId,dLineas,canal,proveedor_id,proveedorNombre
             method:'POST',headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,'Content-Type':'application/json'},body:'{}'});
           codigo=(await r.text()).replace(/"/g,'').trim()||null;
         }catch(e){console.warn('codigo interno:',e.message);}
+        // proveedor_nombre NO se envía: lo rellena un trigger desde la ficha del
+        // proveedor. Guardar aquí lo que leyó el OCR producía 91 grafías del
+        // mismo proveedor donde su ficha solo tiene una, y rompía los filtros.
         const np=await sb('compras_producto',{method:'POST',body:JSON.stringify({
           codigo_interno:codigo,ref_proveedor:ref,nombre:l.producto||null,
-          proveedor_id,proveedor_nombre:proveedorNombre||null,ultimo_precio:num(l.precio_unit)})});
+          proveedor_id,ultimo_precio:num(l.precio_unit)})});
         producto_id=np[0].id;
       }
     }
@@ -2870,7 +2882,14 @@ function setupZoom(){
 /* ---------- productos ---------- */
 async function loadProductos(){
   try{
-    productos=await sb('compras_producto?select=id,codigo_interno,ref_proveedor,nombre,proveedor_nombre,ultimo_precio&order=codigo_interno.asc');
+    // El CIF viene de la FICHA del proveedor, no del texto del albarán: dos
+    // productos del mismo proveedor deben mostrar exactamente el mismo dato.
+    productos=await sb('compras_producto?select=id,codigo_interno,ref_proveedor,nombre,proveedor_nombre,ultimo_precio,proveedor_id,compras_proveedor(nombre,nif)&order=codigo_interno.asc');
+    productos.forEach(p=>{
+      const f=p.compras_proveedor||{};
+      p.prov_nombre=f.nombre||p.proveedor_nombre||'';
+      p.prov_nif=f.nif||'';
+    });
     // precio medio ponderado por cantidad, últimos 12 meses
     const hace1ano=new Date();hace1ano.setFullYear(hace1ano.getFullYear()-1);
     const desde=hace1ano.toISOString().slice(0,10);
@@ -2890,7 +2909,7 @@ async function loadProductos(){
       });
     }catch(e){console.warn('precio medio:',e.message);}
     const sel=document.getElementById('fProdProv');
-    const provs=[...new Set(productos.map(p=>p.proveedor_nombre).filter(Boolean))].sort();
+    const provs=[...new Set(productos.map(p=>p.prov_nombre).filter(Boolean))].sort();
     sel.innerHTML='<option value="">Todos los proveedores</option>'+provs.map(p=>`<option>${p}</option>`).join('');
     renderProd();
   }catch(err){toast('No pude cargar productos: '+err.message,true);}
@@ -2898,25 +2917,31 @@ async function loadProductos(){
 function currentProd(){
   const q=document.getElementById('fProd').value.toLowerCase(), fp=document.getElementById('fProdProv').value;
   return productos.filter(p=>{
-    if(fp&&(p.proveedor_nombre||'')!==fp)return false;
-    if(q){const hay=`${p.codigo_interno||''} ${p.ref_proveedor||''} ${p.nombre||''}`.toLowerCase();if(!hay.includes(q))return false;}
+    if(fp&&(p.prov_nombre||'')!==fp)return false;
+    // el buscador también mira proveedor y CIF: pegar un CIF encuentra todo lo suyo
+    if(q){const hay=`${p.codigo_interno||''} ${p.ref_proveedor||''} ${p.nombre||''} ${p.prov_nombre||''} ${p.prov_nif||''}`.toLowerCase();if(!hay.includes(q))return false;}
     return true;});
 }
 function renderProd(){
   let rows=currentProd();
   const st=sortState.productos;
-  const keymap={cod:p=>p.codigo_interno,prod:p=>p.nombre,ref:p=>p.ref_proveedor,prov:p=>p.proveedor_nombre,precio:p=>p.ultimo_precio,medio:p=>p.precio_medio};
+  const keymap={cod:p=>p.codigo_interno,prod:p=>p.nombre,ref:p=>p.ref_proveedor,prov:p=>p.prov_nombre,cif:p=>p.prov_nif||'zzz',precio:p=>p.ultimo_precio,medio:p=>p.precio_medio};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headProd').innerHTML=
     thh('productos','cod','Cód. interno')+thh('productos','prod','Producto')+thh('productos','ref','Ref. proveedor')+
-    thh('productos','prov','Proveedor')+thh('productos','precio','Últ. precio','num')+thh('productos','medio','Medio 12m','num');
+    thh('productos','prov','Proveedor')+thh('productos','cif','CIF')+thh('productos','precio','Últ. precio','num')+thh('productos','medio','Medio 12m','num');
   const tb=document.getElementById('prodBody');
   document.getElementById('prodCount').textContent=rows.length;
   document.getElementById('emptyProd').style.display=rows.length?'none':'block';
   tb.innerHTML=rows.map(p=>`<tr>
     <td>${p.codigo_interno||'—'}</td>
     <td><span class="editable" onblur="saveProd('${p.id}','nombre',this.textContent)" contenteditable>${p.nombre||''}</span></td>
-    <td>${p.ref_proveedor||''}</td><td>${p.proveedor_nombre||''}</td>
+    <td>${p.ref_proveedor||''}</td><td>${esc(p.prov_nombre)}</td>
+    <td style="white-space:nowrap;font-variant-numeric:tabular-nums">${
+      p.prov_nif ? (cifValido(p.prov_nif)===false
+        ? `${esc(p.prov_nif)} <span style="color:var(--warn)" title="No supera el dígito de control">⚠</span>`
+        : esc(p.prov_nif))
+      : '<span class="hint">sin CIF</span>'}</td>
     <td class="num">${fmt(p.ultimo_precio)}</td>
     <td class="num">${fmt(p.precio_medio)}</td></tr>`).join('');
 }
@@ -2929,7 +2954,7 @@ async function saveProd(id,campo,val){
 function exportProd(){
   const rows=currentProd().map(p=>({
     'Código interno':p.codigo_interno||'','Producto':p.nombre||'','Ref. proveedor':p.ref_proveedor||'',
-    'Proveedor':p.proveedor_nombre||'','Último precio':p.ultimo_precio??'','Precio medio 12m':p.precio_medio!=null?Math.round(p.precio_medio*100)/100:''}));
+    'Proveedor':p.prov_nombre||'','CIF':p.prov_nif||'','Último precio':p.ultimo_precio??'','Precio medio 12m':p.precio_medio!=null?Math.round(p.precio_medio*100)/100:''}));
   if(!rows.length){toast('No hay productos que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(rows),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Productos');
@@ -3637,7 +3662,7 @@ async function ejecutarFusion(idOrigen,idDestino,nombreDestino){
       await sb(`compras_linea?producto_id=eq.${p.id}`,{method:'PATCH',body:JSON.stringify({producto_id:mapaDestino[ref]})});
       await sb(`compras_producto?id=eq.${p.id}`,{method:'DELETE'});
     }else{
-      await sb(`compras_producto?id=eq.${p.id}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idDestino,proveedor_nombre:nombreDestino})});
+      await sb(`compras_producto?id=eq.${p.id}`,{method:'PATCH',body:JSON.stringify({proveedor_id:idDestino})});
     }
   }
   // 3) borrar la ficha de origen
