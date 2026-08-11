@@ -250,6 +250,9 @@
   .brow .blab b{font-weight:600;white-space:nowrap}
   .btrack{background:var(--line);border-radius:6px;height:8px;overflow:hidden}
   .bfill{background:var(--wine);height:100%;border-radius:6px;min-width:2px}
+  tr.fltrow td{background:var(--paper);border-bottom:1px solid var(--line)}
+  tr.fltrow input{font-family:inherit;color:inherit}
+  tr.fltrow input:focus{outline:2px solid var(--ok);outline-offset:-1px}
 </style>
 </head>
 <body>
@@ -338,7 +341,7 @@
         </div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr id="headCompras"></tr></thead>
+            <thead><tr id="headCompras"></tr><tr id="fltCompras" class="fltrow"></tr></thead>
             <tbody id="tbody"></tbody>
           </table>
         </div>
@@ -382,7 +385,7 @@
         </div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr id="headAlb"></tr></thead>
+            <thead><tr id="headAlb"></tr><tr id="fltAlb" class="fltrow"></tr></thead>
             <tbody id="albBody"></tbody>
           </table>
         </div>
@@ -408,7 +411,7 @@
         </div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr id="headFac"></tr></thead>
+            <thead><tr id="headFac"></tr><tr id="fltFac" class="fltrow"></tr></thead>
             <tbody id="facBody"></tbody>
           </table>
         </div>
@@ -514,9 +517,11 @@
             <button class="btn" onclick="exportProd()">Exportar Excel</button>
           </div>
         </div>
+        <div id="dupProdBox" style="display:none;margin-bottom:14px"></div>
+        <div id="selProdBar"></div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr id="headProd"></tr></thead>
+            <thead><tr id="headProd"></tr><tr id="fltProd" class="fltrow"></tr></thead>
             <tbody id="prodBody"></tbody>
           </table>
         </div>
@@ -550,7 +555,7 @@
         <div id="dupProvBox" style="display:none;margin-bottom:16px"></div>
         <div style="overflow-x:auto">
           <table>
-            <thead><tr id="headProv"></tr></thead>
+            <thead><tr id="headProv"></tr><tr id="fltProv" class="fltrow"></tr></thead>
             <tbody id="provBody"></tbody>
           </table>
         </div>
@@ -696,6 +701,108 @@ function thh(tabla,colKey,label,extraClass){
   const arrow=sorted?(st.dir===1?'▲':'▼'):'↕';
   return `<th class="sortable ${sorted?'sorted':''} ${extraClass||''}" onclick="setSort('${tabla}','${colKey}')">${label}<span class="arr">${arrow}</span></th>`;
 }
+/* ========== FILTROS POR COLUMNA ==========
+   Una caja bajo cada cabecera, en todos los listados, con el mismo motor.
+   Reutiliza el keymap que ya existía para ordenar: si una columna se puede
+   ordenar, se puede filtrar, y con el mismo accesor. Así no hay dos verdades
+   sobre qué significa "la columna proveedor".
+
+   Reglas de escritura, iguales en todas las columnas:
+     texto        contiene, sin distinguir mayúsculas ni acentos  -> "cocacola"
+     2026-08-03   las fechas casan por el principio, así que "2026-08" es el mes
+     >100  <50    comparación numérica
+     100-200      rango numérico (o de fechas: 2026-08-01-2026-08-15)
+     "exacto"     entre comillas, coincidencia exacta
+   Cada caja lleva además la lista de valores presentes, así que se puede elegir
+   en vez de teclear.                                                          */
+let colFiltros={};
+function normFiltro(v){
+  return String(v==null?'':v).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+}
+// Para "contiene" y para el exacto se comparan las cadenas SIN puntuación ni
+// espacios: si no, "cocacola" no encontraba "Coca-Cola Europacific", que es
+// justo la búsqueda que uno escribe.
+function compacta(v){return normFiltro(v).replace(/[^a-z0-9]/g,'');}
+function pasaFiltro(valor, patron){
+  const p=String(patron||'').trim();
+  if(!p)return true;
+  const bruto=String(valor==null?'':valor);
+  // "entre comillas" = exacto
+  const ex=p.match(/^"(.*)"$/);
+  if(ex)return compacta(bruto)===compacta(ex[1]);
+  // ORDEN IMPORTANTE: las fechas van ANTES que el rango numérico. Si no,
+  // "2026-08" lo capturaba el patrón de rango como "de 2026 a 8" y dejaba
+  // pasar el 31 de julio.
+  if(/^\d{4}(-\d{2}){0,2}$/.test(p))return bruto.startsWith(p);
+  const rf=p.match(/^\s*(\d{4}-\d{2}-\d{2})\s*\.\.\s*(\d{4}-\d{2}-\d{2})\s*$/);
+  if(rf){const v10=bruto.slice(0,10);return v10>=rf[1]&&v10<=rf[2];}
+  const esFecha=/^\d{4}-\d{2}-\d{2}/.test(bruto);
+  const n=esFecha?null:num(valor);
+  // comparaciones numéricas
+  const cmp=p.match(/^\s*(>=|<=|>|<)\s*(-?[\d.,]+)\s*$/);
+  if(cmp && n!=null){
+    const x=num(cmp[2]); if(x==null)return true;
+    return cmp[1]==='>'?n>x:cmp[1]==='<'?n<x:cmp[1]==='>='?n>=x:n<=x;
+  }
+  // rango numérico a-b
+  const rango=p.match(/^\s*(-?[\d.,]+)\s*-\s*(-?[\d.,]+)\s*$/);
+  if(rango && n!=null){
+    const a=num(rango[1]), b=num(rango[2]);
+    if(a!=null&&b!=null)return n>=Math.min(a,b)&&n<=Math.max(a,b);
+  }
+  return compacta(bruto).includes(compacta(p));
+}
+
+function aplicaColFiltros(tabla, rows, keymap){
+  const f=colFiltros[tabla]||{};
+  const activos=Object.keys(f).filter(k=>String(f[k]||'').trim()!=='' && keymap[k]);
+  if(!activos.length)return rows;
+  return rows.filter(r=>activos.every(k=>pasaFiltro(keymap[k](r), f[k])));
+}
+function setColFiltro(tabla,key,val,fnRender){
+  colFiltros[tabla]=colFiltros[tabla]||{};
+  colFiltros[tabla][key]=val;
+  if(typeof window[fnRender]==='function')window[fnRender]();
+}
+// Fila de filtros. `cols` son las claves en el mismo orden que las cabeceras;
+// null deja un hueco (columnas de acciones que no se filtran).
+function filaFiltros(tabla, cols, rows, keymap, fnRender){
+  const f=colFiltros[tabla]||{};
+  const nAct=Object.keys(f).filter(k=>String(f[k]||'').trim()!=='').length;
+  const celdas=cols.map((k,i)=>{
+    if(!k||!keymap[k])return '<td></td>';
+    // valores presentes, para poder elegir en vez de teclear
+    const vals=[...new Set(rows.map(r=>{const v=keymap[k](r);return v==null?'':String(v);})
+                 .filter(v=>v!==''&&v.length<=48))].sort().slice(0,300);
+    const dl=`dl_${tabla}_${k}`;
+    return `<td style="padding:4px 6px">
+      <input list="${dl}" data-col="${k}" value="${esc(f[k]||'')}" placeholder="—"
+             oninput="setColFiltro('${tabla}','${k}',this.value,'${fnRender}')"
+             style="width:100%;min-width:70px;font-size:11px;padding:3px 5px;border:1px solid var(--line);border-radius:5px;background:var(--paper)">
+      <datalist id="${dl}">${vals.map(v=>`<option value="${esc(v)}">`).join('')}</datalist></td>`;
+  }).join('');
+  const limpiar=nAct?`<div style="margin:6px 0 0"><span class="link" onclick="limpiaColFiltros('${tabla}','${fnRender}')">✕ quitar los ${nAct} filtros</span></div>`:'';
+  return {fila:`<tr class="fltrow">${celdas}</tr>`, limpiar, nAct};
+}
+// Pinta la fila y devuelve el foco al campo que se estaba escribiendo: al
+// reescribir la fila en cada tecla el navegador lo perdía y solo se podía
+// escribir una letra por intento.
+function pintaFiltros(tabla, contId, cols, rows, keymap, fnRender){
+  const cont=document.getElementById(contId); if(!cont)return;
+  const act=document.activeElement;
+  const col=(act&&act.closest&&act.closest('#'+contId))?act.getAttribute('data-col'):null;
+  const pos=col?act.selectionStart:null;
+  const ff=filaFiltros(tabla,cols,rows,keymap,fnRender);
+  cont.outerHTML=ff.fila.replace('<tr class="fltrow">',`<tr id="${contId}" class="fltrow">`);
+  if(col){
+    const nuevo=document.querySelector(`#${contId} [data-col="${col}"]`);
+    if(nuevo){nuevo.focus();try{nuevo.setSelectionRange(pos,pos);}catch(e){}}
+  }
+}
+function limpiaColFiltros(tabla,fnRender){
+  colFiltros[tabla]={};
+  if(typeof window[fnRender]==='function')window[fnRender]();
+}
 function setSort(tabla,colKey){
   const st=sortState[tabla];
   if(st.key===colKey)st.dir*=-1; else{st.key=colKey;st.dir=1;}
@@ -839,7 +946,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v44 · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v45 · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -1005,6 +1112,7 @@ async function sbAll(path,tam=1000,maxPaginas=50){
 let mCentros=[], mTiposIva=[];
 let bloqueosPorFactura={};
 let dupProv=[];
+let dupProd=[];
 let mTerminales={};
 // Traduce el código impreso al centro. El documento lo trae sin la M inicial y
 // el maestro con ella, así que se normaliza por los dos lados.
@@ -1889,13 +1997,17 @@ function renderTable(){
   const st=sortState.compras;
   const keymap={fecha:r=>(r.compras_doc||{}).fecha,prov:r=>(r.compras_doc||{}).proveedor,cod:r=>r.id_producto,
     codapp:r=>codApp(r)||'zzz',
-    prod:r=>r.producto,nalb:r=>(r.compras_doc||{}).num_documento,cant:r=>r.cantidad,imp:r=>r.importe,canal:r=>r.canal,doc:r=>(r.compras_doc||{}).tipo};
+    prod:r=>r.producto,nalb:r=>(r.compras_doc||{}).num_documento,cant:r=>r.cantidad,imp:r=>r.importe,canal:r=>r.canal,doc:r=>(r.compras_doc||{}).tipo,
+    estado:r=>estTexto((r.compras_doc||{}).estado_detalle)};
+  const todas=rows;
+  rows=aplicaColFiltros('compras',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   // cabecera
   document.getElementById('headCompras').innerHTML=
     thh('compras','fecha','Fecha','fecha')+thh('compras','prov','Proveedor')+thh('compras','cod','Ref. prov.')+thh('compras','codapp','Cód. App')+thh('compras','prod','Producto')+
     thh('compras','nalb','Nº albarán')+thh('compras','cant','Cant.','num')+thh('compras','imp','Importe','num')+
-    thh('compras','canal','Centro')+'<th>Estado</th><th></th>';
+    thh('compras','canal','Centro')+thh('compras','estado','Estado')+'<th></th>';
+  pintaFiltros('compras','fltCompras',['fecha','prov','cod','codapp','prod','nalb','cant','imp','canal','estado',null],todas,keymap,'renderTable');
   const tb=document.getElementById('tbody');
   document.getElementById('emptyC').style.display=rows.length?'none':'block';
   tb.innerHTML=rows.map(r=>{const dc=r.compras_doc||{};return `<tr>
@@ -1954,7 +2066,10 @@ function renderAlb(){
   let rows=[...albaranes];
   const st=sortState.albaranes;
   const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const todas=rows;
+  rows=aplicaColFiltros('albaranes',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  pintaFiltros('albaranes','fltAlb',['fecha','cargado','prov','ndoc','centro','base','iva','reten','total','estado',null,null],todas,keymap,'renderAlb');
   document.getElementById('headAlb').innerHTML=
     thh('albaranes','fecha','Fecha','fecha')+thh('albaranes','cargado','Cargado')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
     thh('albaranes','centro','Centro')+thh('albaranes','base','Base','num')+thh('albaranes','iva','IVA','num')+thh('albaranes','reten','Retención','num')+thh('albaranes','total','Total','num')+thh('albaranes','estado','Estado')+'<th>Revisar</th><th></th>';
@@ -2097,7 +2212,10 @@ function renderFac(){
   const st=sortState.facturas;
   const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR',
     a3:a=>a.a3_numdoc?'0 exportada':((bloqueosDe(a.id)||[]).length?'2 '+(bloqueosDe(a.id)||[]).join(' '):'1 lista')};
+  const todas=rows;
+  rows=aplicaColFiltros('facturas',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  pintaFiltros('facturas','fltFac',['fecha','cargado','prov','ndoc','centro','base','iva','reten','total','estado','a3',null,null],todas,keymap,'renderFac');
   document.getElementById('headFac').innerHTML=
     thh('facturas','fecha','Fecha','fecha')+thh('facturas','cargado','Cargado')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
     thh('facturas','centro','Centro')+thh('facturas','base','Base','num')+thh('facturas','iva','IVA','num')+thh('facturas','reten','Retención','num')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+thh('facturas','a3','A3')+'<th>Revisar</th><th></th>';
@@ -2908,6 +3026,7 @@ async function loadProductos(){
         p.precio_medio=(a&&a.cant>0)?(a.imp/a.cant):null;
       });
     }catch(e){console.warn('precio medio:',e.message);}
+    try{ dupProd=await sb('compras_producto_duplicados?select=*'); }catch(e){ dupProd=[]; }
     const sel=document.getElementById('fProdProv');
     const provs=[...new Set(productos.map(p=>p.prov_nombre).filter(Boolean))].sort();
     sel.innerHTML='<option value="">Todos los proveedores</option>'+provs.map(p=>`<option>${p}</option>`).join('');
@@ -2922,18 +3041,116 @@ function currentProd(){
     if(q){const hay=`${p.codigo_interno||''} ${p.ref_proveedor||''} ${p.nombre||''} ${p.prov_nombre||''} ${p.prov_nif||''}`.toLowerCase();if(!hay.includes(q))return false;}
     return true;});
 }
+/* ========== DUPLICADOS DE PRODUCTO ==========
+   Mismo patrón que proveedores. Tres niveles:
+     segura     misma clave tras limpiar el ruido del OCR
+     probable   nombres casi idénticos: hay que mirarlo
+     bloqueada  aparecen juntos en un albarán -> artículos distintos
+   El nivel 'bloqueada' es la regla de Luis y salvó tres pares reales que el
+   parecido de nombre habría fusionado mal (Tanca 12/13, band. 1KG/2KG,
+   hermético 1/3 y 1/2). Por eso ahí no se ofrece ni el botón.               */
+function renderDupProd(){
+  const cont=document.getElementById('dupProdBox'); if(!cont)return;
+  const vis=dupProd.filter(d=>d.nivel!=='bloqueada');
+  if(!dupProd.length){cont.innerHTML='';cont.style.display='none';return;}
+  cont.style.display='block';
+  const seg=vis.filter(d=>d.nivel==='segura').length;
+  const bloq=dupProd.length-vis.length;
+  const abierto=cont.getAttribute('data-abierto')==='1';
+  if(!abierto){
+    cont.innerHTML=`<div class="aviso" style="background:var(--paper);color:var(--muted);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span>${vis.length} posible${vis.length===1?'':'s'} duplicado${vis.length===1?'':'s'} de producto${seg?` · ${seg} segura${seg===1?'':'s'}`:''}${bloq?` · ${bloq} descartado${bloq===1?'':'s'} por aparecer en el mismo albarán`:''}</span>
+      <span class="link" onclick="toggleDupProd(1)">revisar</span></div>`;
+    return;
+  }
+  const fila=d=>`<tr>
+    <td>${d.nivel==='segura'?'<span class="est correcto">segura</span>':'<span class="est revisar">revisar</span>'}
+        <div class="hint" style="margin:2px 0 0">${esc(d.motivo)}</div></td>
+    <td class="hint" style="max-width:150px">${esc(d.proveedor||'')}</td>
+    <td>${esc(d.cod_a)} · ${esc(d.nombre_a)}<div class="hint" style="margin:0">ref ${esc(d.ref_a||'—')} · ${d.lineas_a} líneas · ${fmt(d.precio_a)}</div></td>
+    <td>${esc(d.cod_b)} · ${esc(d.nombre_b)}<div class="hint" style="margin:0">ref ${esc(d.ref_b||'—')} · ${d.lineas_b} líneas · ${fmt(d.precio_b)}</div></td>
+    <td><button class="btn ghost" style="font-size:12px;padding:4px 10px"
+          onclick="fusionarDupProd('${d.id_vive}','${d.id_muere}')">fusionar</button></td></tr>`;
+  cont.innerHTML=`<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <b style="font-size:13px">Posibles duplicados de producto</b>
+      <span class="link" onclick="toggleDupProd(0)">ocultar</span></div>
+    <table><thead><tr><th>Nivel</th><th>Proveedor</th><th>Producto A</th><th>Producto B</th><th></th></tr></thead>
+    <tbody>${vis.map(fila).join('')}</tbody></table>
+    <p class="hint">Sobrevive el que más líneas tiene; el otro le cede las suyas y desaparece.${bloq?` Se han descartado ${bloq} pares porque los dos productos aparecen en un mismo albarán: si el proveedor los factura juntos, no son la misma cosa.`:''}</p>`;
+}
+function toggleDupProd(v){
+  const c=document.getElementById('dupProdBox'); if(!c)return;
+  c.setAttribute('data-abierto',v?'1':'0'); renderDupProd();
+}
+async function fusionarDupProd(vive,muere){
+  const d=dupProd.find(x=>x.id_vive===vive&&x.id_muere===muere); if(!d)return;
+  if(!confirm(`Se van a unir en un solo producto:\n\n  · ${d.cod_a} ${d.nombre_a}\n  · ${d.cod_b} ${d.nombre_b}\n\n`
+    +`Las líneas de albarán del absorbido pasan al superviviente. No se puede deshacer desde la app.\n\n¿Continuar?`))return;
+  try{
+    const r=await sb('rpc/fusionar_producto',{method:'POST',
+      body:JSON.stringify({p_vive:vive,p_muere:muere})});
+    toast(`Productos fusionados · ${(r&&r.lineas_movidas)||0} líneas movidas`);
+    await loadProductos(); await loadCompras();
+  }catch(e){toast('No se pudo fusionar: '+e.message,true);}
+}
+// Fusión a mano desde el propio listado: se marcan dos filas y se unen.
+let selProd=[];
+function marcarProd(id,ev){
+  if(ev)ev.stopPropagation();
+  const i=selProd.indexOf(id);
+  if(i>=0)selProd.splice(i,1); else selProd.push(id);
+  if(selProd.length>2)selProd.shift();
+  renderProd();
+}
+function barraSelProd(){
+  if(selProd.length<2)return selProd.length===1
+    ? '<div class="hint" style="margin-bottom:8px">1 producto marcado · marca otro del MISMO proveedor para fusionarlos</div>' : '';
+  const a=productos.find(p=>p.id===selProd[0]), b=productos.find(p=>p.id===selProd[1]);
+  if(!a||!b)return '';
+  const mismo=(a.proveedor_id===b.proveedor_id);
+  return `<div class="aviso" style="margin-bottom:8px;${mismo?'':'background:var(--warn-soft);border-color:#e8cfa0;color:var(--warn)'}">
+    <div><b>${esc(a.codigo_interno)}</b> ${esc(a.nombre)} &nbsp;⟷&nbsp; <b>${esc(b.codigo_interno)}</b> ${esc(b.nombre)}</div>
+    ${mismo?`<div style="margin-top:6px;display:flex;gap:10px">
+       <button class="btn ghost" style="font-size:12px;padding:4px 10px" onclick="fusionarProdSel(0)">conservar ${esc(a.codigo_interno)}</button>
+       <button class="btn ghost" style="font-size:12px;padding:4px 10px" onclick="fusionarProdSel(1)">conservar ${esc(b.codigo_interno)}</button>
+       <span class="link" onclick="selProd=[];renderProd()">cancelar</span></div>`
+     :`<div style="margin-top:4px">Son de proveedores distintos: en este modelo cada proveedor tiene su propio producto, así que no se pueden unir.
+        <span class="link" onclick="selProd=[];renderProd()">cancelar</span></div>`}</div>`;
+}
+async function fusionarProdSel(cual){
+  if(selProd.length!==2)return;
+  const vive=selProd[cual], muere=selProd[1-cual];
+  const a=productos.find(p=>p.id===vive), b=productos.find(p=>p.id===muere);
+  if(!confirm(`Conservar "${a.nombre}" (${a.codigo_interno}) y absorber "${b.nombre}" (${b.codigo_interno}).\n\n`
+    +`Las líneas de albarán pasan al primero. No se puede deshacer.\n\n¿Continuar?`))return;
+  try{
+    const r=await sb('rpc/fusionar_producto',{method:'POST',body:JSON.stringify({p_vive:vive,p_muere:muere})});
+    toast(`Fusionados · ${(r&&r.lineas_movidas)||0} líneas movidas`);
+    selProd=[]; await loadProductos(); await loadCompras();
+  }catch(e){
+    // el aviso más útil es el de "aparecen juntos en un albarán"
+    toast('No se pudo fusionar: '+e.message,true);
+  }
+}
 function renderProd(){
   let rows=currentProd();
   const st=sortState.productos;
   const keymap={cod:p=>p.codigo_interno,prod:p=>p.nombre,ref:p=>p.ref_proveedor,prov:p=>p.prov_nombre,cif:p=>p.prov_nif||'zzz',precio:p=>p.ultimo_precio,medio:p=>p.precio_medio};
+  const todas=rows;
+  rows=aplicaColFiltros('productos',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  pintaFiltros('productos','fltProd',[null,'cod','prod','ref','prov','cif','precio','medio'],todas,keymap,'renderProd');
+  renderDupProd();
   document.getElementById('headProd').innerHTML=
-    thh('productos','cod','Cód. interno')+thh('productos','prod','Producto')+thh('productos','ref','Ref. proveedor')+
+    '<th></th>'+thh('productos','cod','Cód. interno')+thh('productos','prod','Producto')+thh('productos','ref','Ref. proveedor')+
     thh('productos','prov','Proveedor')+thh('productos','cif','CIF')+thh('productos','precio','Últ. precio','num')+thh('productos','medio','Medio 12m','num');
   const tb=document.getElementById('prodBody');
   document.getElementById('prodCount').textContent=rows.length;
   document.getElementById('emptyProd').style.display=rows.length?'none':'block';
-  tb.innerHTML=rows.map(p=>`<tr>
+  const bs=document.getElementById('selProdBar'); if(bs)bs.innerHTML=barraSelProd();
+  tb.innerHTML=rows.map(p=>`<tr${selProd.includes(p.id)?' style="background:var(--ok-soft)"':''}>
+    <td style="width:26px"><input type="checkbox" ${selProd.includes(p.id)?'checked':''}
+        onclick="marcarProd('${p.id}',event)" title="Marca dos productos del mismo proveedor para fusionarlos"></td>
     <td>${p.codigo_interno||'—'}</td>
     <td><span class="editable" onblur="saveProd('${p.id}','nombre',this.textContent)" contenteditable>${p.nombre||''}</span></td>
     <td>${p.ref_proveedor||''}</td><td>${esc(p.prov_nombre)}</td>
@@ -3535,7 +3752,12 @@ function renderProv(){
   const keymap={nombre:p=>p.nombre,nif:p=>p.nif,depto:p=>p.departamento||'',crit:p=>p.critico?1:0,docs:p=>p._n,
                 cta:p=>p.cuenta_contable||'',cod:p=>a3CuentaACodigo[p.cuenta_proveedor]||'',
                 irpf:p=>p.retencion_modelo||'zzz',estado:p=>p.autorizado===false?0:1};
+  const todas=rows;
+  rows=aplicaColFiltros('proveedores',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
+  pintaFiltros('proveedores','fltProv',
+    ['nombre','nif',null,'depto','cta','cod','irpf','crit',null,null,null,'docs','estado'],
+    todas,keymap,'renderProv');
   // aviso de proveedores nuevos sin autorizar (estilo Ratios)
   const nuevos=proveedores.filter(p=>p.autorizado===false);
   const av=document.getElementById('avisoNuevos');
