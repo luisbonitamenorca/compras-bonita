@@ -946,7 +946,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v47 · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v48 · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -3165,6 +3165,45 @@ async function fusionarProdSel(cual){
 // parecidas, la que sale una vez suele ser la errata del OCR y la que sale
 // cincuenta es la buena. Se cuenta por documento y no por línea, porque un
 // albarán con tres líneas del mismo artículo es una compra, no tres.
+/* ========== BORRAR PRODUCTOS SIN USO ==========
+   Misma regla que en Ratios: sólo se puede borrar un producto que no aparezca
+   en ningún albarán. Si tiene historial, borrarlo dejaría líneas de compra sin
+   producto y falsearía el consumo; en ese caso lo que se quiere es fusionar.
+   La condición se comprueba también en Postgres (borrar_producto), porque una
+   comprobación que sólo vive en el navegador no es una comprobación.          */
+async function borrarProducto(id){
+  const p=productos.find(x=>x.id===id); if(!p)return;
+  if((p.n_albaranes||0)>0){
+    toast(`"${p.nombre}" aparece en ${p.n_albaranes} albaranes: fusiónalo, no lo borres`,true);
+    return;
+  }
+  if(!confirm(`Borrar el producto:\n\n  ${p.codigo_interno} · ${p.nombre}\n  ${p.prov_nombre||''}\n\n`
+    +`No aparece en ningún albarán, así que no se pierde ningún dato de compra.\n\n¿Continuar?`))return;
+  try{
+    await sb('rpc/borrar_producto',{method:'POST',body:JSON.stringify({p_id:id})});
+    toast('Producto borrado');
+    selProd=selProd.filter(x=>x!==id);
+    await loadProductos();
+  }catch(e){toast('No se pudo borrar: '+e.message,true);}
+}
+// Borrado en bloque de lo que se está viendo. Se limita a las filas visibles a
+// propósito: obliga a filtrar y mirar antes, en vez de barrer 264 fichas de una
+// vez sin haberlas repasado.
+async function borrarSinUsoVisibles(){
+  const vis=currentProd().filter(p=>(p.n_albaranes||0)===0);
+  if(!vis.length){toast('No hay productos sin uso entre los que estás viendo',true);return;}
+  const muestra=vis.slice(0,12).map(p=>`  · ${p.codigo_interno} ${p.nombre}`).join('\n');
+  if(!confirm(`Se van a borrar ${vis.length} producto${vis.length===1?'':'s'} que no aparecen en ningún albarán:\n\n`
+    +muestra+(vis.length>12?`\n  … y ${vis.length-12} más`:'')
+    +`\n\nSólo afecta a lo que tienes filtrado ahora mismo. No se pierde ningún dato de compra.\n\n¿Continuar?`))return;
+  let ok=0,fail=0;
+  for(const p of vis){
+    try{ await sb('rpc/borrar_producto',{method:'POST',body:JSON.stringify({p_id:p.id})}); ok++; }
+    catch(e){ fail++; console.warn('no se pudo borrar',p.codigo_interno,e.message); }
+  }
+  toast(fail?`${ok} borrados · ${fail} no se pudieron (ver consola)`:`${ok} productos borrados`);
+  selProd=[]; await loadProductos();
+}
 function barraVeces(p){
   const n=p.n_albaranes||0;
   if(!n)return '<span class="hint" title="Nunca ha llegado en un albarán">sin uso</span>';
@@ -3186,16 +3225,24 @@ function renderProd(){
   const todas=rows;
   rows=aplicaColFiltros('productos',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
-  pintaFiltros('productos','fltProd',[null,'cod','prod','ref','prov','cif','veces','ultima','precio','medio'],todas,keymap,'renderProd');
+  pintaFiltros('productos','fltProd',[null,'cod','prod','ref','prov','cif','veces','ultima','precio','medio',null],todas,keymap,'renderProd');
   renderDupProd();
   document.getElementById('headProd').innerHTML=
     '<th></th>'+thh('productos','cod','Cód. interno')+thh('productos','prod','Producto')+thh('productos','ref','Ref. proveedor')+
     thh('productos','prov','Proveedor')+thh('productos','cif','CIF')+thh('productos','veces','Albaranes','num')+
-    thh('productos','ultima','Última')+thh('productos','precio','Últ. precio','num')+thh('productos','medio','Medio 12m','num');
+    thh('productos','ultima','Última')+thh('productos','precio','Últ. precio','num')+thh('productos','medio','Medio 12m','num')+'<th></th>';
   const tb=document.getElementById('prodBody');
   document.getElementById('prodCount').textContent=rows.length;
   document.getElementById('emptyProd').style.display=rows.length?'none':'block';
-  const bs=document.getElementById('selProdBar'); if(bs)bs.innerHTML=barraSelProd();
+  const bs=document.getElementById('selProdBar');
+  if(bs){
+    const nSin=rows.filter(p=>(p.n_albaranes||0)===0).length;
+    const avisoSin=(nSin>1)
+      ? `<div class="hint" style="margin-bottom:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+           <span>${nSin} de los ${rows.length} que estás viendo no aparecen en ningún albarán.</span>
+           <span class="link" onclick="borrarSinUsoVisibles()">borrar esos ${nSin}</span></div>` : '';
+    bs.innerHTML=avisoSin+barraSelProd();
+  }
   tb.innerHTML=rows.map(p=>`<tr${selProd.includes(p.id)?' style="background:var(--ok-soft)"':''}>
     <td style="width:26px"><input type="checkbox" ${selProd.includes(p.id)?'checked':''}
         onclick="marcarProd('${p.id}',event)" title="Marca dos productos del mismo proveedor para fusionarlos"></td>
@@ -3210,7 +3257,10 @@ function renderProd(){
     <td class="num">${barraVeces(p)}</td>
     <td class="fecha" style="white-space:nowrap">${p.ultima_vez||''}</td>
     <td class="num">${fmt(p.ultimo_precio)}</td>
-    <td class="num">${fmt(p.precio_medio)}</td></tr>`).join('');
+    <td class="num">${fmt(p.precio_medio)}</td>
+    <td>${(p.n_albaranes||0)===0
+      ? `<span class="del" onclick="borrarProducto('${p.id}')" title="Borrar: no aparece en ningún albarán">🗑</span>`
+      : `<span style="opacity:.22;cursor:not-allowed" title="Aparece en ${p.n_albaranes} albaranes: fusiónalo en vez de borrarlo">🗑</span>`}</td></tr>`).join('');
 }
 async function saveProd(id,campo,val){
   val=val.trim();
