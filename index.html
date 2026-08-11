@@ -791,7 +791,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v39 · v38 + CUPS de electricidad y reglas automaticas (09-ago-2026 14:20)');
+  console.log('Compras Bonita · v40 · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -955,6 +955,7 @@ async function sbAll(path,tam=1000,maxPaginas=50){
 }
 // Maestros para los desplegables del reparto. Se cargan una vez por sesión.
 let mCentros=[], mTiposIva=[];
+let bloqueosPorFactura={};
 let mTerminales={};
 // Traduce el código impreso al centro. El documento lo trae sin la M inicial y
 // el maestro con ella, así que se normaliza por los dos lados.
@@ -1421,12 +1422,21 @@ ${formaAlbaran}`;
 }
 // Código de IVA de A3 a partir del porcentaje impreso en la factura.
 // Devuelve null si el porcentaje no es ninguno de los tipos españoles vigentes.
+// Replica exacta de cod_iva_de_pct() en Postgres. Antes le faltaban los
+// regimenes agrarios y, peor, con 10,5 % la tolerancia de +-0,5 lo capturaba
+// como RED10: una factura de ganadero se contabilizaba al 10 %.
+// EPS: en el borde justo de la tolerancia, JS y Postgres discrepaban. numeric
+// calcula 12,3-12 = 0,3 exacto y el double de JS da 0,30000000000000071, asi
+// que el mismo porcentaje caia en tipos distintos segun quien lo mirase.
+const EPS_IVA=1e-9;
 function codIvaDePct(p){
   const n=num(p); if(n==null)return null;
-  if(Math.abs(n-21)<=0.5)return 'ORD21';
-  if(Math.abs(n-10)<=0.5)return 'RED10';
-  if(Math.abs(n-4)<=0.5) return 'SRE';
-  if(Math.abs(n)<=0.3)   return 'EXE';
+  if(Math.abs(n-21)  <=0.5 +EPS_IVA) return 'ORD21';
+  if(Math.abs(n-12)  <=0.3 +EPS_IVA) return 'REGESP12';
+  if(Math.abs(n-10.5)<=0.2 +EPS_IVA) return 'GANPE105';
+  if(Math.abs(n-10)  <=0.2 +EPS_IVA) return 'RED10';
+  if(Math.abs(n-4)   <=0.5 +EPS_IVA) return 'SRE';
+  if(Math.abs(n)     <=0.30+EPS_IVA) return 'EXE';
   return null;
 }
 // Guarda el reparto contable de una factura (una línea por tipo de IVA).
@@ -1880,17 +1890,25 @@ function renderAlb(){
 function exportAlb(){
   let rows=[...albaranes];
   const st=sortState.albaranes;
-  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado};
+  const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº albarán':a.num_documento||'',
-    Centro:a.canal||'',Base:a.base??'',IVA:a.iva??'','Retención':a.retencion??'','Total':a.total??'',Estado:a.estado_detalle||'REVISAR'}));
+    Centro:a.canal||'',Base:a.base??'',IVA:a.iva??'','Retención':a.retencion??'','Total':a.total??'',Estado:estTexto(a.estado_detalle)}));
   if(!data.length){toast('No hay albaranes que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Albaranes');
   XLSX.writeFile(wb,`albaranes_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function loadFacturas(){
-  try{facturas=await sbAll("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at&order=created_at.desc");
+  try{facturas=await sbAll("compras_doc?tipo=eq.factura&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,albaranes_detectados,origen,created_at,a3_numdoc&order=created_at.desc");
+    // Bloqueos reales de A3, calculados por Postgres. Sin esto la lista solo
+    // enseñaba la mitad del juicio sobre cada factura.
+    try{
+      const bl=await sbAll('compras_a3_export_preview?select=doc_id,bloqueos');
+      const acc={};
+      bl.forEach(x=>{(acc[x.doc_id]=acc[x.doc_id]||new Set());(x.bloqueos||[]).forEach(b=>acc[x.doc_id].add(b));});
+      bloqueosPorFactura={}; Object.keys(acc).forEach(k=>{bloqueosPorFactura[k]=[...acc[k]];});
+    }catch(e){bloqueosPorFactura={};}
     // Cuántos centros tiene el reparto de cada factura, para poder distinguir
     // "sin asignar" (en blanco) de "repartida entre varios".
     try{
@@ -1995,11 +2013,12 @@ async function limpiarLineasFacturas(){
 function renderFac(){
   let rows=[...facturas];
   const st=sortState.facturas;
-  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
+  const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR',
+    a3:a=>a.a3_numdoc?'0 exportada':((bloqueosDe(a.id)||[]).length?'2 '+(bloqueosDe(a.id)||[]).join(' '):'1 lista')};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   document.getElementById('headFac').innerHTML=
     thh('facturas','fecha','Fecha','fecha')+thh('facturas','cargado','Cargado')+thh('facturas','prov','Proveedor')+thh('facturas','ndoc','Nº factura')+
-    thh('facturas','centro','Centro')+thh('facturas','base','Base','num')+thh('facturas','iva','IVA','num')+thh('facturas','reten','Retención','num')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+'<th>Revisar</th><th></th>';
+    thh('facturas','centro','Centro')+thh('facturas','base','Base','num')+thh('facturas','iva','IVA','num')+thh('facturas','reten','Retención','num')+thh('facturas','total','Total','num')+thh('facturas','estado','Estado')+thh('facturas','a3','A3')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('facBody');
   document.getElementById('facCount').textContent=facturas.length;
   document.getElementById('facTotal').textContent=fmt(facturas.reduce((s,a)=>s+(num(a.base)||0),0));
@@ -2008,6 +2027,7 @@ function renderFac(){
     <td class="fecha">${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
     <td>${celdaCentroFactura(a)}</td><td class="num">${fmt(a.base)}</td><td class="num">${fmt(a.iva)}</td><td class="num">${a.retencion?'-'+fmt(a.retencion):''}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
+    <td>${badgeA3(a)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
     <td><span class="del" onclick="borrarDoc('${a.id}','${(a.proveedor||'').replace(/'/g,'')} ${a.num_documento||''}','${a.imagen_url||''}')" title="Borrar">🗑</span></td></tr>`).join('');
 }
@@ -2038,15 +2058,23 @@ function exportFac(){
   const st=sortState.facturas;
   const keymap={fecha:a=>a.fecha,cargado:a=>a.created_at,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>((centrosPorFactura[a.id]||{}).n_centros>1?'zzz varios':a.canal),base:a=>num(a.base)||0,iva:a=>num(a.iva)||0,reten:a=>num(a.retencion)||0,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
-  const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº factura':a.num_documento||'',
-    Centro:a.canal||'',Total:a.total??'',Estado:a.estado_detalle||'REVISAR'}));
+  // El Excel enseñaba menos columnas que la pantalla y con otras palabras.
+  // Ahora lleva lo mismo, incluidos los bloqueos de A3.
+  const data=rows.map(a=>{const bl=bloqueosDe(a.id);return{
+    Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',
+    Proveedor:a.proveedor||'','Nº factura':a.num_documento||'',
+    Centro:((centrosPorFactura[a.id]||{}).n_centros>1?`varios (${centrosPorFactura[a.id].n_centros})`:(a.canal||'')),
+    Base:a.base??'',IVA:a.iva??'','Retención':a.retencion??'',Total:a.total??'',
+    Estado:estTexto(a.estado_detalle),
+    'A3':a.a3_numdoc?`exportada nº ${a.a3_numdoc}`:(bl===null?'':(bl.length?'bloqueada':'lista')),
+    'Bloqueos A3':(bl||[]).join(' · ')};});
   if(!data.length){toast('No hay facturas que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Facturas');
   XLSX.writeFile(wb,`facturas_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function revisar(docId){
-  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,iva,total,descuento,estado,estado_detalle,imagen_url,albaranes_detectados,proveedor_id,proveedor_nif,reparto_sugerido`);
+  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,iva,total,descuento,estado,estado_detalle,imagen_url,albaranes_detectados,proveedor_id,proveedor_nif,reparto_sugerido,retencion,raw`);
   if(!r.length){toast('No encontrado',true);return;}
   const a=r[0];
   revisarDoc=a;  // guardamos el doc abierto para la edición
@@ -2082,6 +2110,111 @@ async function revisar(docId){
   renderDetalle();
   document.getElementById('modal').classList.add('show');
 }
+
+/* ========== DESGLOSE DE IVA VISIBLE ==========
+   La factura de Torrella llevaba 4.232,91 al 10 % y 367,68 al 4 %, y el reparto
+   contable estaba bien guardado, pero el modal solo enseñaba la base sumada
+   (4.600,59). Sin ver el desglose no hay forma de comprobar contra la foto si el
+   OCR se dejo una de las bases, que es justo el error que cometio en el albaran
+   INV/32.784 de JJ Carreras. Esta tabla saca a la superficie lo que ya existia. */
+const PCT_IVA={ORD21:21,REGESP12:12,GANPE105:10.5,RED10:10,SRE:4,EXE:0};
+function pctDeCodIva(c){const v=PCT_IVA[c];return v==null?null:v;}
+// Devuelve {filas,fuente} donde fuente dice de donde salen los numeros:
+//  'reparto' = las filas que de verdad se exportan a A3 (mandan sobre todo lo demas)
+//  'ocr'     = el cuadro de IVA que leyo el OCR y aun no genero reparto
+//  'deducido'= no hay desglose: se deduce un unico tipo de base y cuota
+function desgloseIva(){
+  const a=revisarDoc; if(!a)return {filas:[],fuente:null};
+  const vivas=(repartoFilas||[]).filter(r=>!r._del);
+  if(vivas.length){
+    return {fuente:'reparto', filas:vivas.map(r=>{
+      const b=num(r.base), pct=pctDeCodIva(r.tipo_iva);
+      const cuota=(num(r.cuota)!=null)?num(r.cuota):((b!=null&&pct!=null)?Math.round(b*pct)/100:null);
+      return {base:b,cod:r.tipo_iva||null,pct,cuota,centro:r.centro_coste||null};
+    })};
+  }
+  const dg=(a.raw&&Array.isArray(a.raw.desglose_iva))?a.raw.desglose_iva:[];
+  const utiles=dg.filter(x=>num(x.base)!=null);
+  if(utiles.length){
+    return {fuente:'ocr', filas:utiles.map(x=>({
+      base:num(x.base), cod:codIvaDePct(x.pct), pct:num(x.pct), cuota:num(x.cuota), centro:null}))};
+  }
+  const b=num(a.base), i=num(a.iva);
+  if(b==null)return {filas:[],fuente:null};
+  const cod=tipoIvaDesde(b,i);
+  return {fuente:'deducido', filas:[{base:b,cod,pct:pctDeCodIva(cod),cuota:i,centro:null}]};
+}
+function bloqueDesgloseIva(){
+  const a=revisarDoc; if(!a)return '';
+  const {filas,fuente}=desgloseIva();
+  if(!filas.length)return '';
+  // Con un solo tipo deducido no aporta nada: la linea de arriba ya lo dice todo.
+  if(fuente==='deducido'&&filas.length===1&&filas[0].cod)return '';
+  if(fuente==='ocr'&&filas.length===1&&filas[0].cod)return '';
+  const sumaB=filas.reduce((s,f)=>s+(f.base||0),0);
+  const sumaC=filas.reduce((s,f)=>s+(f.cuota||0),0);
+  const b=num(a.base), i=num(a.iva);
+  const difB=(b!=null)?Math.round((sumaB-b)*100)/100:null;
+  const difC=(i!=null)?Math.round((sumaC-i)*100)/100:null;
+  const malB=(difB!=null&&Math.abs(difB)>0.02);
+  const malC=(difC!=null&&Math.abs(difC)>0.02);
+  const sinCod=filas.some(f=>!f.cod);
+  const rotulo={reparto:'tal como se exportara a A3',
+                ocr:'leido de la factura · aun sin reparto contable guardado',
+                deducido:'deducido de base y cuota · el OCR no leyo el cuadro de IVA'}[fuente]||'';
+  const avisos=[];
+  if(malB)avisos.push(`las bases suman ${fmt(sumaB)} y la base declarada es ${fmt(b)} · ${difB>0?'sobran':'faltan'} ${fmt(Math.abs(difB))}`);
+  if(malC)avisos.push(`las cuotas suman ${fmt(sumaC)} y el IVA declarado es ${fmt(i)} · ${difC>0?'sobran':'faltan'} ${fmt(Math.abs(difC))}`);
+  if(sinCod)avisos.push('hay lineas sin tipo de IVA reconocido: A3 no las admite asi');
+  const nTipos=new Set(filas.map(f=>f.cod).filter(Boolean)).size;
+  const varios=nTipos>1;
+  const aviso = avisos.length
+    ? `<div class="aviso" style="margin-top:8px">&#9888;&#65039; ${avisos.join('<br>')}</div>`
+    : (varios?`<div class="aviso" style="margin-top:8px;background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)">&#10003; El desglose cuadra con la base y el IVA de arriba</div>`:'');
+  return `<div style="margin-bottom:16px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:6px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">
+      Desglose de IVA${varios?` · ${nTipos} tipos`:''}${filas.length>nTipos?` · ${filas.length} líneas`:''}</div>
+    <p class="hint" style="margin:0 0 8px">${rotulo}</p>
+    <table><thead><tr><th class="num">Base</th><th>Tipo</th><th class="num">%</th><th class="num">Cuota</th>${filas.some(f=>f.centro)?'<th>Centro</th>':''}</tr></thead>
+    <tbody>${filas.map(f=>`<tr>
+      <td class="num" style="font-variant-numeric:tabular-nums">${f.base!=null?Number(f.base).toFixed(2):''}</td>
+      <td>${f.cod?esc(f.cod):'<span style="color:var(--warn)">sin reconocer</span>'}</td>
+      <td class="num">${f.pct!=null?f.pct+' %':''}</td>
+      <td class="num" style="font-variant-numeric:tabular-nums">${f.cuota!=null?Number(f.cuota).toFixed(2):''}</td>
+      ${filas.some(g=>g.centro)?`<td>${f.centro?esc(String(f.centro)):'<span class="hint">hereda</span>'}</td>`:''}</tr>`).join('')}
+    </tbody>
+    <tfoot><tr style="font-weight:600;border-top:2px solid var(--line)">
+      <td class="num" style="font-variant-numeric:tabular-nums">${sumaB.toFixed(2)}</td><td></td><td></td>
+      <td class="num" style="font-variant-numeric:tabular-nums">${sumaC.toFixed(2)}</td>
+      ${filas.some(g=>g.centro)?'<td></td>':''}</tr></tfoot></table>
+    ${aviso}</div>`;
+}
+/* Por que este documento no esta en verde. El motivo se calculaba ya, pero solo
+   se escribia en la consola del navegador, donde no lo ve nadie. */
+function motivoEstado(a){
+  if(!a)return '';
+  if(a.estado_detalle==='DUPLICADO')
+    return 'Repite nº + fecha + importe de otro documento ya cargado.';
+  if(a.estado_detalle==='NO_CUADRA'){
+    if(a.tipo==='factura'){
+      const c=cuadreFactura(num(a.base),num(a.iva),Math.abs(num(a.retencion)||0),num(a.total),
+                            (a.raw&&a.raw.desglose_iva)||null);
+      return c.ok?'':('No cuadra: '+c.motivo);
+    }
+    return 'La suma de las lineas no cuadra con la base ni con el total.';
+  }
+  if(a.estado_detalle==='REVISAR'){
+    if(a.tipo!=='factura'&&!(revisarLineas||[]).length)
+      return 'Sin lineas de detalle que auditar: revisa contra la foto.';
+    if(num(a.total)==null)return 'Sin total leido.';
+    return 'Marcado para revisar al cargarlo.';
+  }
+  return '';
+}
+function bloqueMotivoEstado(){
+  const m=motivoEstado(revisarDoc);
+  return m?`<div class="aviso" style="margin-bottom:14px">&#9888;&#65039; ${esc(m)}</div>`:'';
+}
 function renderDetalle(){
   const a=revisarDoc;
   const dc=document.getElementById('mDet');
@@ -2105,6 +2238,8 @@ function renderDetalle(){
               onblur="saveImporteDoc('${a.id}','total',this.textContent)" contenteditable>${a.total??''}</span> €</span>
         <span id="avImportes" style="font-size:12px"></span>
       </div>
+      ${bloqueMotivoEstado()}
+      ${bloqueDesgloseIva()}
       <div style="font-weight:600;font-size:13px;margin-bottom:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Albaranes incluidos en esta factura</div>
       <table><thead><tr><th>Nº albarán</th><th>Fecha</th><th class="num">Importe</th><th></th></tr></thead><tbody>
       ${revisarAlbaranes.length?revisarAlbaranes.map((x,i)=>x._del?'':`<tr>
@@ -2144,6 +2279,8 @@ function renderDetalle(){
       <span>Base imponible: <b ${ed} data-f="base">${a.base!=null?Number(a.base).toFixed(2):''}</b> €</span>
       <span>Descuento: <b ${ed} data-f="descuento">${desc?desc.toFixed(2):'0'}</b> €</span>
     </div>
+    ${bloqueMotivoEstado()}
+    ${bloqueDesgloseIva()}
     ${(descuadre!=null&&Math.abs(descuadre)>0.15)?`<div class="aviso" id="avDescuadre" style="margin-bottom:14px">⚠️ Suma de líneas ${fmt(sumaLin)}${desc?' − dto '+fmt(desc):''} difiere de la base en ${fmt(descuadre)}</div>`:`<div class="aviso" id="avDescuadre" style="margin-bottom:14px;background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok);display:${lineas.length?'flex':'none'}">✓ Suma de líneas ${fmt(sumaLin)} cuadra con la base</div>`}
     <table><thead><tr><th>Cód.</th><th>Producto</th><th class="num">Cant.</th><th class="num">Importe</th><th></th></tr></thead><tbody>
     ${lineas.length?lineas.map((l,i)=>l._del?'':`<tr>
@@ -2213,6 +2350,7 @@ function addRep(){
   const yaSum=repartoFilas.filter(r=>!r._del).reduce((a,r)=>a+(num(r.base)||0),0);
   const tipos=[...new Set(repartoFilas.map(r=>r.tipo_iva).filter(Boolean))];
   const ivaDef=(tipos.length===1)?tipos[0]:(tipos.length===0?tipoIvaDesde(revisarDoc.base,revisarDoc.iva):null);
+  if(tipos.length>1)toast('Esta factura lleva varios tipos de IVA: elige el tipo de la nueva línea',true);
   repartoFilas.push({base:Math.round(Math.max(0,base-yaSum)*100)/100,tipo_iva:ivaDef,
                      centro_coste:null,cuenta_gasto:null,descripcion:null,_new:true,_tocada:true});
   renderReparto();
@@ -2242,12 +2380,12 @@ function tipoIvaDesde(base,cuota){
   // Réplica exacta de tipo_iva_de() en Postgres. Incluye los regímenes especiales
   // agrarios (12 % y 10,5 %), que usan los proveedores agricultores. Las
   // tolerancias del 10 y el 10,5 son estrechas a propósito: con ±0,5 se pisaban.
-  if(Math.abs(p-21)  <=0.5) return 'ORD21';
-  if(Math.abs(p-12)  <=0.3) return 'REGESP12';
-  if(Math.abs(p-10.5)<=0.2) return 'GANPE105';
-  if(Math.abs(p-10)  <=0.2) return 'RED10';
-  if(Math.abs(p-4)   <=0.5) return 'SRE';
-  if(Math.abs(p-0)   <=0.30)return 'EXE';
+  if(Math.abs(p-21)  <=0.5 +EPS_IVA) return 'ORD21';
+  if(Math.abs(p-12)  <=0.3 +EPS_IVA) return 'REGESP12';
+  if(Math.abs(p-10.5)<=0.2 +EPS_IVA) return 'GANPE105';
+  if(Math.abs(p-10)  <=0.2 +EPS_IVA) return 'RED10';
+  if(Math.abs(p-4)   <=0.5 +EPS_IVA) return 'SRE';
+  if(Math.abs(p-0)   <=0.30+EPS_IVA) return 'EXE';
   return null;
 }
 // ¿Hay de dónde sacar una propuesta? Puede venir del campo que lee el OCR o,
@@ -2293,13 +2431,48 @@ function proponerReparto(){
   }
 
   const codigoDe=nombre=>{const m=mCentros.find(c=>c.canal===nombre);return m?m.codigo:null;};
-  repartoFilas=[...porCentro.entries()].map(([k,imp],i)=>({
-    base:Math.round(imp*100)/100,
-    tipo_iva:ivaUnico,
-    centro_coste:(k==='__sin__')?null:codigoDe(k),
-    cuenta_gasto:null, descripcion:(k==='__sin__')?'sin centro reconocido':k,
-    _new:true,_tocada:true
-  }));
+  // Con varios tipos de IVA hay que cruzar centros x tipos: 2 centros y 2 tipos
+  // son 4 lineas, no 2. Antes se dejaba el IVA en blanco y la factura quedaba
+  // bloqueada en A3 sin explicacion. El reparto por centro es un porcentaje del
+  // documento entero, asi que aplicarlo a cada base de IVA es exacto.
+  const dgTipos=(()=>{
+    const {filas}=desgloseIva();
+    const cods=[...new Set(filas.map(f=>f.cod).filter(Boolean))];
+    if(cods.length<2)return null;
+    return filas.filter(f=>f.cod&&f.base!=null);
+  })();
+  const entradas=[...porCentro.entries()];
+  if(dgTipos){
+    const totalBase=dgTipos.reduce((s,f)=>s+f.base,0);
+    const filas=[];
+    entradas.forEach(([k,imp])=>{
+      const peso=totalBase?imp/totalBase:0;
+      dgTipos.forEach(t=>filas.push({
+        base:Math.round(t.base*peso*100)/100, tipo_iva:t.cod,
+        centro_coste:(k==='__sin__')?null:codigoDe(k),
+        cuenta_gasto:null, descripcion:((k==='__sin__')?'sin centro reconocido':k),
+        _new:true,_tocada:true}));
+    });
+    // El redondeo se absorbe POR TIPO DE IVA, no en la ultima linea del todo.
+    // La base de cada tipo determina su cuota, asi que debe salir exacta; el
+    // centimo se lo come el ultimo centro de ese mismo tipo, que es analitica.
+    dgTipos.forEach(t=>{
+      const suyas=filas.filter(f=>f.tipo_iva===t.cod);
+      if(!suyas.length)return;
+      const sum=suyas.reduce((s,f)=>s+f.base,0);
+      const u=suyas[suyas.length-1];
+      u.base=Math.round((u.base+(t.base-sum))*100)/100;
+    });
+    repartoFilas=filas;
+  }else{
+    repartoFilas=entradas.map(([k,imp])=>({
+      base:Math.round(imp*100)/100,
+      tipo_iva:ivaUnico,
+      centro_coste:(k==='__sin__')?null:codigoDe(k),
+      cuenta_gasto:null, descripcion:(k==='__sin__')?'sin centro reconocido':k,
+      _new:true,_tocada:true
+    }));
+  }
   modoReparto=true;
   renderReparto();
 
@@ -2353,6 +2526,9 @@ function renderReparto(){
      <td style="width:130px"><span contenteditable class="ce" data-repc="${i}" style="font-variant-numeric:tabular-nums">${r.cuenta_gasto||''}</span></td>
      <td><span class="del" onclick="delRep(${i})" title="Quitar">🗑</span></td></tr>`).join('');
 
+  const sinIva=vivas.filter(r=>!r.tipo_iva).length;
+  const avisoIva = sinIva
+    ? `<div class="aviso" style="margin-top:12px">⚠️ ${sinIva} línea${sinIva>1?'s':''} sin tipo de IVA. A3 las rechaza: asigna el tipo en cada una.</div>` : '';
   const avisoCuadre = cuadra
     ? `<div class="aviso" style="margin-top:12px;background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok)">✓ El reparto suma ${fmt(suma)} y cuadra con la base${nCentros>1?` · ${nCentros} centros`:''}</div>`
     : `<div class="aviso" style="margin-top:12px">⚠️ El reparto suma ${fmt(suma)} y la base es ${fmt(base)} · ${dif>0?'faltan':'sobran'} ${fmt(Math.abs(dif))}. No se puede exportar a A3 hasta que cuadre.</div>`;
@@ -2366,7 +2542,7 @@ function renderReparto(){
        ${hayFuenteReparto()
          ? '<span class="link" onclick="proponerReparto()">✨ rehacer propuesta automática</span>' : ''}
        <span class="link" onclick="cancelarReparto()">cancelar</span>
-     </div>${avisoCuadre}
+     </div>${avisoCuadre}${avisoIva}
      ${nCentros<2?'<p class="hint" style="margin:8px 0 0">Asigna un centro distinto a cada línea; las que dejes en «hereda» irán al centro de la factura.</p>':''}
      <div style="margin-top:12px"><button class="btn" onclick="guardarReparto()">Guardar reparto</button></div>`;
 
@@ -2388,6 +2564,9 @@ async function guardarReparto(){
   const suma=vivas.reduce((s,r)=>s+(num(r.base)||0),0);
   if(vivas.length && (base==null||Math.abs(base-suma)>0.02)){
     toast('El reparto no cuadra con la base. Ajusta los importes antes de guardar.',true);return;
+  }
+  if(vivas.some(r=>!r.tipo_iva)){
+    toast('Hay líneas sin tipo de IVA. A3 no las admite: asígnalo antes de guardar.',true);return;
   }
   if(vivas.some(r=>!r.centro_coste)){
     if(!confirm('Hay líneas sin centro de coste: heredarán el centro de la factura. ¿Guardar así?'))return;
@@ -3777,11 +3956,32 @@ async function reencolarErrores(){
 }
 function fmt(n){if(n==null||n==='')return '';return Number(n).toLocaleString('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2})+' €';}
 function fmtCarga(ts){if(!ts)return '';const d=new Date(ts);if(isNaN(d))return '';const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} <span style="color:var(--muted);font-size:11px">${p(d.getHours())}:${p(d.getMinutes())}</span>`;}
+// Pantalla y Excel decian cosas distintas de lo mismo: la tabla ponia
+// "No cuadra" y el Excel "NO_CUADRA". Un solo vocabulario para los dos.
+const EST_MAP={CORRECTO:['correcto','Correcto','🟢'],DUPLICADO:['duplicado','Duplicado','🔴'],
+  NO_CUADRA:['nocuadra','No cuadra','🟠'],REVISAR:['revisar','Revisar','🟡']};
+function estTexto(ed){return (EST_MAP[ed]||EST_MAP['REVISAR'])[1];}
 function estBadge(ed){
-  const map={CORRECTO:['correcto','🟢 Correcto'],DUPLICADO:['duplicado','🔴 Duplicado'],
-    NO_CUADRA:['nocuadra','🟠 No cuadra'],REVISAR:['revisar','🟡 Revisar']};
-  const [cls,txt]=map[ed]||map['REVISAR'];
-  return `<span class="est ${cls}">${txt}</span>`;
+  const [cls,txt,ico]=EST_MAP[ed]||EST_MAP['REVISAR'];
+  return `<span class="est ${cls}">${ico} ${txt}</span>`;
+}
+/* ========== BLOQUEOS DE A3 EN EL LISTADO ==========
+   Habia dos jueces distintos sobre la misma factura y solo se veia uno.
+   El semaforo de la lista (estado_detalle) se calcula en el navegador cuando se
+   carga el documento y solo pregunta "¿suman los numeros?". Los bloqueos de A3
+   los calcula Postgres en vivo y preguntan "¿se puede contabilizar?": codigo de
+   proveedor, cuenta de gasto, centro de coste, tipo de IVA, modelo de IRPF.
+   Solo se solapan en un motivo. Por eso una factura podia llevar dias en verde
+   estando bloqueada para A3 — que es justo lo que le pasaba a la de Ahorreluz.
+   Ahora los dos jueces se ven en la lista y salen los dos en el Excel.        */
+function bloqueosDe(id){return bloqueosPorFactura[id]||null;}
+function badgeA3(a){
+  const bl=bloqueosDe(a.id);
+  if(a.a3_numdoc)return `<span class="est correcto" title="Ya exportada a A3">✓ nº ${a.a3_numdoc}</span>`;
+  if(bl===null)return '<span class="hint">—</span>';
+  if(!bl.length)return '<span class="est correcto" title="Sin bloqueos: entra en el proximo Excel de A3">✓ Lista</span>';
+  const t=bl.join(' · ').replace(/"/g,'&quot;');
+  return `<span class="est nocuadra" title="${t}">🟠 ${bl.length===1?esc(bl[0]):bl.length+' bloqueos'}</span>`;
 }
 // Cuadre LAXO de la suma de albaranes: orientativo, no al céntimo.
 // Lo importante no es el céntimo, sino no haberse dejado ningún albarán.
