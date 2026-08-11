@@ -946,7 +946,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v46 · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v47 · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -3016,19 +3016,28 @@ async function loadProductos(){
     const hace1ano=new Date();hace1ano.setFullYear(hace1ano.getFullYear()-1);
     const desde=hace1ano.toISOString().slice(0,10);
     try{
-      const lin=await sb(`compras_linea?producto_id=not.is.null&select=producto_id,cantidad,importe,compras_doc(fecha)`);
-      const acc={}; // producto_id -> {imp, cant}
+      const lin=await sbAll(`compras_linea?producto_id=not.is.null&select=producto_id,doc_id,cantidad,importe,compras_doc(fecha)`);
+      const acc={}; // producto_id -> {imp, cant, docs:Set, ultima}
       lin.forEach(l=>{
         const f=(l.compras_doc||{}).fecha;
-        if(f&&f<desde)return; // fuera de ventana de 12 meses
         const id=l.producto_id;if(!id)return;
-        if(!acc[id])acc[id]={imp:0,cant:0};
+        if(!acc[id])acc[id]={imp:0,cant:0,docs:new Set(),ultima:null};
+        // la frecuencia cuenta SIEMPRE (sin ventana): saber que algo se compró
+        // una sola vez hace tres años es justo lo que delata la errata del OCR
+        acc[id].docs.add(l.doc_id);
+        if(f&&(!acc[id].ultima||f>acc[id].ultima))acc[id].ultima=f;
+        if(f&&f<desde)return;            // el precio medio sí es de 12 meses
         acc[id].imp+=(l.importe||0); acc[id].cant+=(l.cantidad||0);
       });
+      let maxDocs=1;
       productos.forEach(p=>{
         const a=acc[p.id];
         p.precio_medio=(a&&a.cant>0)?(a.imp/a.cant):null;
+        p.n_albaranes=a?a.docs.size:0;
+        p.ultima_vez=a?a.ultima:null;
+        if(p.n_albaranes>maxDocs)maxDocs=p.n_albaranes;
       });
+      productos.forEach(p=>{p._maxDocs=maxDocs;});
     }catch(e){console.warn('precio medio:',e.message);}
     try{ dupProd=await sb('compras_producto_duplicados?select=*'); }catch(e){ dupProd=[]; }
     const sel=document.getElementById('fProdProv');
@@ -3071,16 +3080,31 @@ function renderDupProd(){
     <td>${d.nivel==='segura'?'<span class="est correcto">segura</span>':'<span class="est revisar">revisar</span>'}
         <div class="hint" style="margin:2px 0 0">${esc(d.motivo)}</div></td>
     <td class="hint" style="max-width:150px">${esc(d.proveedor||'')}</td>
-    <td>${esc(d.cod_a)} · ${esc(d.nombre_a)}<div class="hint" style="margin:0">ref ${esc(d.ref_a||'—')} · ${d.lineas_a} líneas · ${fmt(d.precio_a)}</div></td>
-    <td>${esc(d.cod_b)} · ${esc(d.nombre_b)}<div class="hint" style="margin:0">ref ${esc(d.ref_b||'—')} · ${d.lineas_b} líneas · ${fmt(d.precio_b)}</div></td>
+    <td>${esc(d.cod_a)} · ${esc(d.nombre_a)}<div class="hint" style="margin:0">${vecesTxt(d.albaranes_a)} · ref ${esc(d.ref_a||'—')} · ${fmt(d.precio_a)}${d.ultima_a?' · hasta '+d.ultima_a:''}</div></td>
+    <td>${esc(d.cod_b)} · ${esc(d.nombre_b)}<div class="hint" style="margin:0">${vecesTxt(d.albaranes_b)} · ref ${esc(d.ref_b||'—')} · ${fmt(d.precio_b)}${d.ultima_b?' · hasta '+d.ultima_b:''}</div></td>
     <td><button class="btn ghost" style="font-size:12px;padding:4px 10px"
-          onclick="fusionarDupProd('${d.id_vive}','${d.id_muere}')">fusionar</button></td></tr>`;
+          onclick="fusionarDupProd('${d.id_vive}','${d.id_muere}')">fusionar</button>${pistaVeces(d)}</td></tr>`;
   cont.innerHTML=`<div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
       <b style="font-size:13px">Posibles duplicados de producto</b>
       <span class="link" onclick="toggleDupProd(0)">ocultar</span></div>
     <table><thead><tr><th>Nivel</th><th>Proveedor</th><th>Producto A</th><th>Producto B</th><th></th></tr></thead>
     <tbody>${vis.map(fila).join('')}</tbody></table>
     <p class="hint">Sobrevive el que más líneas tiene; el otro le cede las suyas y desaparece.${bloq?` Se han descartado ${bloq} pares porque los dos productos aparecen en un mismo albarán: si el proveedor los factura juntos, no son la misma cosa.`:''}</p>`;
+}
+function vecesTxt(n){
+  n=n||0;
+  if(!n)return '<b style="color:var(--warn)">0 albaranes</b>';
+  return `<b>${n} albar${n===1?'án':'anes'}</b>`;
+}
+// Recomendación explícita cuando el desequilibrio no deja lugar a dudas.
+function pistaVeces(d){
+  const a=d.albaranes_a||0, b=d.albaranes_b||0;
+  const alto=Math.max(a,b), bajo=Math.min(a,b);
+  if(alto>=3 && bajo<=1)
+    return `<div class="hint" style="margin-top:4px;color:var(--ok)">Uno aparece en ${alto} albaranes y el otro en ${bajo}: casi seguro que el de ${bajo} es una lectura errónea del mismo.</div>`;
+  if(alto>=2 && bajo>=2)
+    return `<div class="hint" style="margin-top:4px;color:var(--warn)">Los dos se compran con regularidad (${a} y ${b} albaranes): mira bien si de verdad son el mismo artículo.</div>`;
+  return '';
 }
 function toggleDupProd(v){
   const c=document.getElementById('dupProdBox'); if(!c)return;
@@ -3136,18 +3160,38 @@ async function fusionarProdSel(cual){
     toast('No se pudo fusionar: '+e.message,true);
   }
 }
+// Frecuencia: en cuántos albaranes DISTINTOS aparece el producto. Es el mismo
+// indicador del clasificador de Ratios y sirve para lo mismo: entre dos fichas
+// parecidas, la que sale una vez suele ser la errata del OCR y la que sale
+// cincuenta es la buena. Se cuenta por documento y no por línea, porque un
+// albarán con tres líneas del mismo artículo es una compra, no tres.
+function barraVeces(p){
+  const n=p.n_albaranes||0;
+  if(!n)return '<span class="hint" title="Nunca ha llegado en un albarán">sin uso</span>';
+  const max=p._maxDocs||1;
+  const pct=Math.max(6,Math.round(n/max*100));
+  const col=n===1?'var(--warn)':'var(--ok)';
+  return `<span style="display:inline-flex;align-items:center;gap:6px;justify-content:flex-end"
+     title="Aparece en ${n} albar${n===1?'án':'anes'}${n===1?' · una sola aparición: si hay otro parecido, probablemente sea el mismo':''}">
+     <span style="font-variant-numeric:tabular-nums">${n}</span>
+     <span style="width:38px;height:5px;background:var(--line);border-radius:3px;overflow:hidden;display:inline-block">
+       <span style="display:block;height:100%;width:${pct}%;background:${col}"></span></span></span>`;
+}
 function renderProd(){
   let rows=currentProd();
   const st=sortState.productos;
-  const keymap={cod:p=>p.codigo_interno,prod:p=>p.nombre,ref:p=>p.ref_proveedor,prov:p=>p.prov_nombre,cif:p=>p.prov_nif||'zzz',precio:p=>p.ultimo_precio,medio:p=>p.precio_medio};
+  const keymap={cod:p=>p.codigo_interno,prod:p=>p.nombre,ref:p=>p.ref_proveedor,prov:p=>p.prov_nombre,cif:p=>p.prov_nif||'zzz',
+    veces:p=>p.n_albaranes||0, ultima:p=>p.ultima_vez||'',
+    precio:p=>p.ultimo_precio,medio:p=>p.precio_medio};
   const todas=rows;
   rows=aplicaColFiltros('productos',rows,keymap);
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
-  pintaFiltros('productos','fltProd',[null,'cod','prod','ref','prov','cif','precio','medio'],todas,keymap,'renderProd');
+  pintaFiltros('productos','fltProd',[null,'cod','prod','ref','prov','cif','veces','ultima','precio','medio'],todas,keymap,'renderProd');
   renderDupProd();
   document.getElementById('headProd').innerHTML=
     '<th></th>'+thh('productos','cod','Cód. interno')+thh('productos','prod','Producto')+thh('productos','ref','Ref. proveedor')+
-    thh('productos','prov','Proveedor')+thh('productos','cif','CIF')+thh('productos','precio','Últ. precio','num')+thh('productos','medio','Medio 12m','num');
+    thh('productos','prov','Proveedor')+thh('productos','cif','CIF')+thh('productos','veces','Albaranes','num')+
+    thh('productos','ultima','Última')+thh('productos','precio','Últ. precio','num')+thh('productos','medio','Medio 12m','num');
   const tb=document.getElementById('prodBody');
   document.getElementById('prodCount').textContent=rows.length;
   document.getElementById('emptyProd').style.display=rows.length?'none':'block';
@@ -3163,6 +3207,8 @@ function renderProd(){
         ? `${esc(p.prov_nif)} <span style="color:var(--warn)" title="No supera el dígito de control">⚠</span>`
         : esc(p.prov_nif))
       : '<span class="hint">sin CIF</span>'}</td>
+    <td class="num">${barraVeces(p)}</td>
+    <td class="fecha" style="white-space:nowrap">${p.ultima_vez||''}</td>
     <td class="num">${fmt(p.ultimo_precio)}</td>
     <td class="num">${fmt(p.precio_medio)}</td></tr>`).join('');
 }
