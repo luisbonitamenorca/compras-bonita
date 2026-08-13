@@ -961,7 +961,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v51 · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA (11-ago-2026)');
+  console.log('Compras Bonita · v52 · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -1499,6 +1499,21 @@ Asigna "canal" SOLO si una regla, el departamento habitual del proveedor o el pr
 El proveedor_nif es el CIF/NIF del proveedor que EMITE el documento (no el del cliente Bonita Menorca / Binifadet). Si el documento no muestra el CIF pero reconoces el proveedor por la tabla de equivalencias, usa el CIF de esa tabla.
 "base" es la base imponible total (sin IVA). "descuento" es cualquier descuento global al pie (positivo; 0 si no hay o ya está repartido).
 
+EL CUADRO DE IVA DEL PIE CUANDO TIENE VARIAS FILAS. Este es el error más frecuente y más caro, léelo despacio. Muchos proveedores imprimen al pie una tabla con UNA FILA POR TIPO DE IVA, y las etiquetas de columna salen UNA SOLA VEZ, arriba:
+   Base Imp.     IVA %      Imp. IVA
+     120,71     10,00%        12,07
+     298,99      4,00%        11,96
+Aquí hay DOS bases (120,71 y 298,99) y DOS cuotas (12,07 y 11,96).
+- "base" es la SUMA de todas las filas de la columna de bases: 419,70. NUNCA una sola fila. Si devuelves 120,71 o 298,99 como base, está MAL.
+- "iva" es la SUMA de todas las cuotas: 24,03.
+- El "total" es base + iva = 443,73, y coincide con la casilla rotulada TOTAL. NUNCA cojas el total de la columna de bases: 298,99 es una base, no un total. Si el número que ibas a dar como total aparece también dentro del cuadro de IVA, es que te has equivocado de casilla.
+- Comprobación obligatoria antes de responder: suma de bases + suma de cuotas = total. Si no cuadra, has leído mal alguna casilla; vuelve a mirar el cuadro antes de contestar.
+- Esa misma tabla es la que va en "desglose_iva", una entrada por fila.
+
+CANTIDAD DE LAS LÍNEAS. En las tablas de producto, la cantidad que hay que devolver es la que MULTIPLICADA POR EL PRECIO UNITARIO DA EL IMPORTE de la línea. Muchos albaranes traen dos columnas de cantidad (por ejemplo CAJAS y UND/KG, o BULTOS y UNIDADES): la buena es casi siempre la de unidades reales, no la de cajas. Antes de devolver cada línea, comprueba cantidad x precio_unit = importe con un margen de un céntimo; si no cuadra, has cogido la columna equivocada.
+- Si una línea deja alguna columna EN BLANCO, no desplaces las demás para rellenar el hueco, y no cojas valores de la fila de arriba o de abajo. Es preferible devolver null en un campo que un número de otra fila.
+- Las cabeceras de sección (por ejemplo "02 - REFRIGERADO", "<SECO>", "CONGELADO") no son productos: no las devuelvas como líneas.
+
 NUESTRO NIF NO ES EL DEL PROVEEDOR. El NIF B01996826 es el de BONITA MENORCA, S.L., que es el CLIENTE en todos estos documentos. No lo devuelvas nunca como "proveedor_nif": si es el único NIF que ves, deja "proveedor_nif" en null antes que poner ese. Sí son válidos los NIF con sufijo B01996826-01 (Bodega) y B01996826-02 (Producción), que son almacenes internos que nos hacen albaranes de traspaso.
 
 CUPS (facturas de luz). Las facturas eléctricas identifican el punto de suministro con un CUPS: 20 o 22 caracteres que empiezan por ES seguidos de 16 dígitos y una o dos letras, por ejemplo ES0031500018635001XV0F. Suele venir etiquetado como "CUPS", "Código Universal de Punto de Suministro" o "Nº de suministro". Devuélvelo en "codigo_cups" tal cual, sin espacios ni guiones. Si la factura no lo trae, pon null. Si hubiera varios CUPS en un mismo documento, devuelve el del punto que factura esa página.
@@ -1623,6 +1638,57 @@ async function tieneRepartoManual(docId){
     return r.length>0;
   }catch(e){return false;}
 }
+// Corrige el error clasico del OCR con los pies de IVA de varias filas: coger UNA
+// fila del cuadro como base (o como total) del documento entero. Solo actua cuando
+// la alternativa cuadra al centimo, asi que no puede inventarse nada: si hay la mas
+// minima duda, deja el documento como esta y que lo vea una persona.
+// Devuelve la lista de arreglos aplicados (vacia si no toco nada).
+function autocorregirDesglose(d){
+  const arreglos=[];
+  const dg=Array.isArray(d.desglose_iva)?d.desglose_iva:[];
+  if(dg.length<2)return arreglos;
+  const bases=dg.map(x=>num(x.base)).filter(x=>x!=null);
+  const cuotas=dg.map(x=>num(x.cuota)).filter(x=>x!=null);
+  if(bases.length!==dg.length||cuotas.length!==dg.length)return arreglos;
+  const sb=+bases.reduce((a,x)=>a+x,0).toFixed(2);
+  const sc=+cuotas.reduce((a,x)=>a+x,0).toFixed(2);
+  const cerca=(a,b)=>a!=null&&b!=null&&Math.abs(a-b)<=0.02;
+  const b=num(d.base), i=num(d.iva), t=num(d.total);
+  const ret=Math.abs(num(d.retencion)||0);
+  // El total bueno segun el propio cuadro del pie.
+  const tCuadro=+(sb+sc-ret).toFixed(2);
+
+  // (a) El total es en realidad una de las bases del cuadro (leyo la casilla de al lado).
+  if(!cerca(t,tCuadro) && bases.some(x=>cerca(x,t)) && sb>0){
+    arreglos.push(`total ${t} → ${tCuadro} (era una de las bases del cuadro de IVA)`);
+    d.total=tCuadro;
+  }
+  // (b) La base declarada es UNA fila del cuadro en vez de la suma de todas.
+  if(!cerca(b,sb) && bases.some(x=>cerca(x,b)) && cerca(num(d.total),tCuadro)){
+    arreglos.push(`base ${b} → ${sb} (era solo una fila del cuadro de IVA)`);
+    d.base=sb;
+    if(!cerca(i,sc)){ arreglos.push(`IVA ${i} → ${sc}`); d.iva=sc; }
+  }
+  // (c) La base ya cuadra pero el IVA se quedo con una sola cuota.
+  else if(cerca(num(d.base),sb) && !cerca(i,sc) && cuotas.some(x=>cerca(x,i))
+          && cerca(+(sb+sc-ret).toFixed(2),num(d.total))){
+    arreglos.push(`IVA ${i} → ${sc} (era solo una fila del cuadro de IVA)`);
+    d.iva=sc;
+  }
+  return arreglos;
+}
+
+// Lineas cuya cantidad x precio no da el importe. No bloquea nada: es un aviso para
+// que se vea a simple vista, porque estas lineas cuadran de total y envenenan Ratios
+// en silencio (cantidad de cajas en vez de unidades, columnas desplazadas...).
+function lineasDescuadradas(lineas){
+  return (lineas||[]).filter(l=>{
+    const c=num(l.cantidad), p=num(l.precio_unit), im=num(l.importe);
+    if(c==null||p==null||im==null||c===0||p===0)return false;
+    return Math.abs(c*p-im)>0.02;
+  });
+}
+
 async function guardarRepartoIva(docId,desglose,baseFactura){
   const filas=(desglose||[])
     .map(x=>({cod:codIvaDePct(x.pct),base:num(x.base),cuota:num(x.cuota)}))
@@ -1759,6 +1825,14 @@ async function procesarUno(c){
   // Si el modelo ha devuelto NUESTRO NIF como proveedor, se ignora: es el del
   // cliente. Mejor quedarse sin NIF y que alguien lo asigne, que enganchar la
   // factura a nuestra propia ficha y que salga mal en la exportación.
+  // Red de seguridad sobre los pies de IVA de varias filas. Va aquí, antes de la
+  // fusión de páginas y de la auditoría, porque ambas usan base/iva/total: si se
+  // corrigiese después, la página se fusionaría con los importes malos.
+  const _fix=autocorregirDesglose(d);
+  if(_fix.length){
+    console.warn('Autocorregido '+(d.num_documento||'')+': '+_fix.join(' · '));
+    d._autocorregido=_fix;
+  }
   if(esNifPropioSinSufijo(d.proveedor_nif)){
     console.warn('NIF propio devuelto como proveedor; se descarta:',d.proveedor);
     d.proveedor_nif=null;
@@ -2517,14 +2591,19 @@ function renderDetalle(){
     ${bloqueMotivoEstado()}
     ${bloqueDesgloseIva()}
     ${(descuadre!=null&&Math.abs(descuadre)>0.15)?`<div class="aviso" id="avDescuadre" style="margin-bottom:14px">⚠️ Suma de líneas ${fmt(sumaLin)}${desc?' − dto '+fmt(desc):''} difiere de la base en ${fmt(descuadre)}</div>`:`<div class="aviso" id="avDescuadre" style="margin-bottom:14px;background:var(--ok-soft);border-color:#bcd9c2;color:var(--ok);display:${lineas.length?'flex':'none'}">✓ Suma de líneas ${fmt(sumaLin)} cuadra con la base</div>`}
-    <table><thead><tr><th>Cód.</th><th>Producto</th><th class="num">Cant.</th><th class="num">Importe</th><th></th></tr></thead><tbody>
-    ${lineas.length?lineas.map((l,i)=>l._del?'':`<tr>
-      <td><span ${ed} data-i="${i}" data-f="id_producto">${l.id_producto||''}</span></td>
+    ${(()=>{const mal=lineasDescuadradas(lineas.filter(l=>!l._del));return mal.length?`<div class="aviso" style="margin-bottom:14px">⚠️ ${mal.length} línea${mal.length>1?'s':''} donde cantidad × precio no da el importe (marcadas abajo). Suele ser que el OCR cogió las cajas en vez de las unidades, o que se desplazó de columna. El total del albarán puede cuadrar igual, pero el coste por unidad sale mal en Ratios.</div>`:''})()}
+    <table><thead><tr><th>Cód.</th><th>Producto</th><th class="num">Cant.</th><th class="num">P. unit.</th><th class="num">Importe</th><th></th></tr></thead><tbody>
+    ${lineas.length?lineas.map((l,i)=>{ if(l._del)return '';
+      const _c=num(l.cantidad),_p=num(l.precio_unit),_im=num(l.importe);
+      const _mal=(_c!=null&&_p!=null&&_im!=null&&_c!==0&&_p!==0&&Math.abs(_c*_p-_im)>0.02);
+      return `<tr${_mal?' style="background:var(--warn-soft,#fdf6e3)" title="cantidad × precio = '+(_c*_p).toFixed(2)+' €, pero el importe dice '+_im.toFixed(2)+' €"':''}>
+      <td>${_mal?'<span style="color:#b8860b" title="cantidad × precio no da el importe">⚠️ </span>':''}<span ${ed} data-i="${i}" data-f="id_producto">${l.id_producto||''}</span></td>
       <td><span ${ed} data-i="${i}" data-f="producto">${l.producto||''}</span></td>
       <td class="num"><span ${ed} data-i="${i}" data-f="cantidad">${l.cantidad??''}</span></td>
+      <td class="num"><span ${ed} data-i="${i}" data-f="precio_unit">${l.precio_unit!=null?Number(l.precio_unit).toFixed(4):''}</span></td>
       <td class="num"><span ${ed} data-i="${i}" data-f="importe">${l.importe!=null?Number(l.importe).toFixed(2):''}</span></td>
-      <td><span class="del" data-i="${i}" onclick="borrarLinea(${i})" title="Quitar línea">🗑</span></td></tr>`).join('')
-      :'<tr><td colspan="5" class="hint">El OCR no extrajo líneas.</td></tr>'}
+      <td><span class="del" data-i="${i}" onclick="borrarLinea(${i})" title="Quitar línea">🗑</span></td></tr>`; }).join('')
+      :'<tr><td colspan="6" class="hint">El OCR no extrajo líneas.</td></tr>'}
     </tbody></table>
     <div style="margin-top:8px"><span class="link" onclick="anadirLinea()">+ añadir línea</span></div>
     <p class="hint">Edita cualquier celda (clic) comparando con la foto. Al guardar se recalcula el cuadre.</p>
@@ -2943,6 +3022,7 @@ async function guardarRevision(){
     l.id_producto=g('id_producto')||null;
     l.producto=g('producto')||null;
     l.cantidad=num(g('cantidad'));
+    l.precio_unit=num(g('precio_unit'));
     l.importe=num(g('importe'));
   });
   try{
@@ -2958,7 +3038,7 @@ async function guardarRevision(){
     for(const l of revisarLineas){
       if(l._del&&l.id){await sb(`compras_linea?id=eq.${l.id}`,{method:'DELETE'});continue;}
       if(l._del)continue;
-      const payload={id_producto:l.id_producto,producto:l.producto,cantidad:l.cantidad,importe:l.importe};
+      const payload={id_producto:l.id_producto,producto:l.producto,cantidad:l.cantidad,precio_unit:l.precio_unit,importe:l.importe};
       if(l.id){await sb(`compras_linea?id=eq.${l.id}`,{method:'PATCH',body:JSON.stringify(payload)});}
       else{await sb('compras_linea',{method:'POST',body:JSON.stringify({...payload,doc_id:revisarDoc.id,canal:revisarDoc.canal})});}
     }
@@ -3411,6 +3491,8 @@ async function reprocesarDoc(doc){
     const prompt2=prompt+"\n\nIMPORTANTE: responde \u00daNICAMENTE con el objeto JSON, sin texto antes ni despu\u00e9s y sin ```.";
     d=parseJson(await callAI([porUrl,{type:"text",text:prompt2}]));
   }
+  const _fixR=autocorregirDesglose(d);
+  if(_fixR.length) console.warn('Autocorregido al reprocesar '+(doc.num_documento||'')+': '+_fixR.join(' · '));
   const esFactura=(doc.tipo==='factura');
   const canal=doc.canal||null;            // se respeta el centro asignado a mano
   // red de seguridad: factura con los albaranes metidos en "lineas"
