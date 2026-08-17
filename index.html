@@ -791,9 +791,16 @@ function filaFiltros(tabla, cols, rows, keymap, fnRender){
   const nAct=Object.keys(f).filter(k=>String(f[k]||'').trim()!=='').length;
   const celdas=cols.map((k,i)=>{
     if(!k||!keymap[k])return '<td></td>';
-    // valores presentes, para poder elegir en vez de teclear
+    // valores presentes, para poder elegir en vez de teclear.
+    // Los dos topes son defensivos, no de diseño: el de longitud evita que una
+    // lectura disparatada del OCR meta un párrafo en la lista, y el de número
+    // evita un datalist gigantesco. Estaban en 48 y 300, y dejaban fuera cosas
+    // reales: "DISTNURA DISTRIBUCIONES (HIJOS DE RAMON OLIVER, S.L.)" son 53
+    // caracteres, así que el proveedor no salía en el desplegable aunque sí
+    // filtrara al teclearlo; y con 811 productos, los 511 posteriores a la
+    // letra L no aparecían nunca.
     const vals=[...new Set(rows.map(r=>{const v=keymap[k](r);return v==null?'':String(v);})
-                 .filter(v=>v!==''&&v.length<=48))].sort().slice(0,300);
+                 .filter(v=>v!==''&&v.length<=120))].sort().slice(0,2000);
     const dl=`dl_${tabla}_${k}`;
     return `<td style="padding:4px 6px">
       <input list="${dl}" data-col="${k}" value="${esc(f[k]||'')}" placeholder="—"
