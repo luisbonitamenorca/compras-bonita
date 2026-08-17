@@ -226,6 +226,10 @@
   .zoomctl button{width:34px;height:34px;border-radius:8px;border:none;background:rgba(255,255,255,.92);color:#2a2622;
     font-size:18px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.25)}
   .zoomctl button:hover{background:#fff}
+  .pagctl{position:absolute;top:12px;left:12px;display:flex;gap:6px;z-index:2;flex-wrap:wrap}
+  .pagctl button{height:30px;padding:0 12px;border-radius:8px;border:none;background:rgba(255,255,255,.92);
+    color:#2a2622;font-size:13px;font-weight:600;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.25)}
+  .pagctl button.on{background:var(--wine);color:#fff}
   .modal .detcol{padding:18px 22px;overflow:auto}
   .modal .ce{border-bottom:1px dashed var(--line);padding:1px 4px;border-radius:4px;cursor:text;display:inline-block;min-width:18px}
   .modal .ce:hover{background:#fff;border-bottom-color:var(--wine)}
@@ -1715,13 +1719,13 @@ function normNumDoc(v){ return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,
 // crear un documento nuevo. La fecha NO entra en la clave de agrupación porque
 // es justo el campo que el OCR confunde con el vencimiento.
 // Devuelve: {accion:'fusionado'|'duplicado'|'nuevo', docId, aviso}
-async function fusionarPaginaAlbaran(d,proveedor_id,pagina){
+async function fusionarPaginaAlbaran(d,proveedor_id,pagina,imagen_url){
   const nn=normNumDoc(d.num_documento);
   if(!proveedor_id||!nn) return {accion:'nuevo'};
   let hermanos;
   try{
     hermanos=await sb(`compras_doc?tipo=eq.albaran&proveedor_id=eq.${proveedor_id}`
-      +`&select=id,num_documento,fecha,base,iva,total,pagina,paginas,paginas_vistas&order=created_at.asc`);
+      +`&select=id,num_documento,fecha,base,iva,total,pagina,paginas,paginas_vistas,imagenes,imagen_url&order=created_at.asc`);
   }catch(e){ console.warn('No pude buscar páginas hermanas:',e.message); return {accion:'nuevo'}; }
   const h=(hermanos||[]).find(x=>normNumDoc(x.num_documento)===nn);
   if(!h) return {accion:'nuevo'};
@@ -1739,6 +1743,19 @@ async function fusionarPaginaAlbaran(d,proveedor_id,pagina){
   if(num(h.iva)  ==null && num(d.iva)  !=null) parche.iva  =num(d.iva);
   if(num(h.total)==null && num(d.total)!=null) parche.total=num(d.total);
   if(!h.paginas && num(d.paginas)) parche.paginas=num(d.paginas);
+  // La foto del folio entrante se anade a la lista del documento que se queda.
+  // Antes se subia al bucket y se perdia: el albaran solo ensenaba la pagina 1
+  // y el reproceso no tenia con que releer el resto.
+  if(imagen_url){
+    const yaHay=Array.isArray(h.imagenes)&&h.imagenes.length
+      ? h.imagenes.slice()
+      : (h.imagen_url?[{url:h.imagen_url,pagina:h.pagina||1}]:[]);
+    if(!yaHay.some(f=>f&&f.url===imagen_url)){
+      yaHay.push({url:imagen_url,pagina});
+      yaHay.sort((x,y)=>(x.pagina||0)-(y.pagina||0));
+      parche.imagenes=yaHay;
+    }
+  }
 
   let aviso=null;
   if(h.fecha && d.fecha){
@@ -1894,7 +1911,7 @@ async function procesarUno(c){
   //     duplicado: una página 2 no es un documento nuevo ni una copia.
   if(docTipo==='albaran'){
     const pag=num(d.pagina)||1;
-    const fus=await fusionarPaginaAlbaran(d,proveedor_id,pag);
+    const fus=await fusionarPaginaAlbaran(d,proveedor_id,pag,imagen_url);
     if(fus.accion==='fusionado'){
       await guardarLineasDoc(fus.docId,d.lineas,canal,proveedor_id,d.proveedor);
       if(c.correoAdjId){
@@ -2024,6 +2041,10 @@ async function procesarUno(c){
     codigo_terminal:d.codigo_terminal||null,
     codigo_cups:(d.codigo_cups||'').replace(/[^A-Za-z0-9]/g,'')||null,
     estado:estadoSimple,estado_detalle:estadoDet,hash_doc:hashDoc,imagen_url,origen:c.correoAdjId?'correo':'manual',
+    // La lista arranca con esta foto. Al fusionar folios se le van anadiendo
+    // las demas, para poder verlas todas y para poder releer el documento
+    // entero (ver reprocesarDoc).
+    imagenes:imagen_url?[{url:imagen_url,pagina:!esFactura?(num(d.pagina)||1):1}]:null,
     // páginas: solo tiene sentido en albaranes. paginas_vistas arranca con esta.
     pagina:!esFactura?(num(d.pagina)||1):null,
     paginas:!esFactura?(num(d.paginas)||1):null,
@@ -2399,7 +2420,7 @@ function exportFac(){
   XLSX.writeFile(wb,`facturas_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 async function revisar(docId){
-  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,iva,total,descuento,estado,estado_detalle,imagen_url,albaranes_detectados,proveedor_id,proveedor_nif,reparto_sugerido,retencion,raw`);
+  const r=await sb(`compras_doc?id=eq.${docId}&select=id,tipo,fecha,proveedor,num_documento,canal,base,iva,total,descuento,estado,estado_detalle,imagen_url,imagenes,albaranes_detectados,proveedor_id,proveedor_nif,reparto_sugerido,retencion,raw,pagina,paginas,paginas_vistas`);
   if(!r.length){toast('No encontrado',true);return;}
   const a=r[0];
   revisarDoc=a;  // guardamos el doc abierto para la edición
@@ -2416,24 +2437,42 @@ async function revisar(docId){
   modoReparto=false;
   document.getElementById('mTitle').textContent=`${tituloTipo} · ${a.proveedor||''} ${a.num_documento?'· '+a.num_documento:''}`;
   // imagen
-  const ic=document.getElementById('mImg');
-  if(a.imagen_url){
-    if(a.imagen_url.toLowerCase().endsWith('.pdf')){
-      ic.innerHTML=`<iframe src="${a.imagen_url}"></iframe>`;
-    }else{
-      ic.innerHTML=`<img id="zimg" src="${a.imagen_url}" alt="documento">
-        <div class="zoomctl">
-          <button onclick="rotar()" title="Girar 90°">↻</button>
-          <button onclick="zoomStep(-1)" title="Alejar">−</button>
-          <button onclick="zoomStep(1)" title="Acercar">+</button>
-          <button onclick="zoomReset()" title="Restablecer">⊙</button>
-        </div>`;
-      setupZoom();
-    }
-  }else ic.innerHTML='<div class="noimg">sin imagen guardada</div>';
+  imgsDoc=fotosDe(a);
+  pintaImagen(0);
   // detalle (editable)
   renderDetalle();
   document.getElementById('modal').classList.add('show');
+}
+
+/* Galeria de folios. Un albaran de 3 hojas son 3 fotos: se pintan con
+   pestanas y se reutiliza el mismo visor con zoom para cada una. */
+let imgsDoc=[];
+function fotosDe(a){
+  if(Array.isArray(a.imagenes)&&a.imagenes.length) return a.imagenes.filter(f=>f&&f.url);
+  return a.imagen_url?[{url:a.imagen_url,pagina:a.pagina||1}]:[];
+}
+function pintaImagen(i){
+  const ic=document.getElementById('mImg');
+  if(!ic)return;
+  if(!imgsDoc.length){ic.innerHTML='<div class="noimg">sin imagen guardada</div>';return;}
+  const idx=Math.max(0,Math.min(i,imgsDoc.length-1));
+  const url=imgsDoc[idx].url;
+  const tabs=imgsDoc.length>1
+    ? '<div class="pagctl">'+imgsDoc.map((f,k)=>
+        `<button class="${k===idx?'on':''}" onclick="pintaImagen(${k})">Pág. ${f.pagina||k+1}</button>`).join('')+'</div>'
+    : '';
+  if(String(url).toLowerCase().split('?')[0].endsWith('.pdf')){
+    ic.innerHTML=tabs+`<iframe src="${url}"></iframe>`;
+  }else{
+    ic.innerHTML=tabs+`<img id="zimg" src="${url}" alt="documento">
+      <div class="zoomctl">
+        <button onclick="rotar()" title="Girar 90°">↻</button>
+        <button onclick="zoomStep(-1)" title="Alejar">−</button>
+        <button onclick="zoomStep(1)" title="Acercar">+</button>
+        <button onclick="zoomReset()" title="Restablecer">⊙</button>
+      </div>`;
+    setupZoom();
+  }
 }
 
 /* ========== DESGLOSE DE IVA VISIBLE ==========
@@ -3482,29 +3521,35 @@ async function urlABase64(url){
 // Mantiene el centro elegido a mano y el proveedor; refresca importes, descuento,
 // lineas y estado. Devuelve {ok, estado} o {ok:false, motivo}.
 async function reprocesarDoc(doc){
-  if(!doc.imagen_url)return {ok:false,motivo:'sin foto guardada'};
+  const fotos=fotosDe(doc);
+  if(!fotos.length)return {ok:false,motivo:'sin foto guardada'};
   const prompt=construirPromptOCR(doc.tipo);
-  const esPdf=doc.imagen_url.toLowerCase().split('?')[0].endsWith('.pdf');
+  const bloque=u=>String(u).toLowerCase().split('?')[0].endsWith('.pdf')
+    ? {type:"document",source:{type:"url",url:u}}
+    : {type:"image",source:{type:"url",url:u}};
 
   // El documento YA está en el bucket con URL pública, así que se manda la
   // dirección y la API lo descarga ella. Antes se bajaba, se pasaba a base64 y
   // se empujaba por la función de Vercel: con un PDF grande eso reventaba con un
   // 413 y el botón "Reprocesar" parecía no hacer nada.
-  const porUrl = esPdf
-    ? {type:"document",source:{type:"url",url:doc.imagen_url}}
-    : {type:"image",source:{type:"url",url:doc.imagen_url}};
+  // Se mandan TODOS los folios en una sola llamada: asi la IA ve el documento
+  // entero y un articulo partido por el corte de pagina se resuelve solo.
+  const porUrl=fotos.map(f=>bloque(f.url));
 
   let cruda;
   try{
-    cruda=await callAI([porUrl,{type:"text",text:prompt}]);
+    cruda=await callAI([...porUrl,{type:"text",text:prompt}]);
   }catch(e1){
-    // Si la API no puede alcanzar la URL, se vuelve al método antiguo.
+    // Si la API no puede alcanzar las URL, se vuelve al método antiguo.
     console.warn('Reproceso por URL falló, reintento con base64:',e1.message);
-    const {b64,mime}=await urlABase64(doc.imagen_url);
-    const block=mime==='application/pdf'
-      ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}
-      : {type:"image",source:{type:"base64",media_type:mime,data:b64}};
-    cruda=await callAI([block,{type:"text",text:prompt}]);
+    const blocks=[];
+    for(const f of fotos){
+      const {b64,mime}=await urlABase64(f.url);
+      blocks.push(mime==='application/pdf'
+        ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}
+        : {type:"image",source:{type:"base64",media_type:mime,data:b64}});
+    }
+    cruda=await callAI([...blocks,{type:"text",text:prompt}]);
   }
 
   let d;
@@ -3580,9 +3625,13 @@ async function reprocesarDoc(doc){
   // el reproceso debe guardar TAMBIÉN lo que guarda el alta, o los campos nuevos
   // se quedan a null y la fusión de páginas se queda sin datos con los que trabajar
   if(!esFactura){
-    parche.pagina  = num(d.pagina)||1;
-    parche.paginas = num(d.paginas)||1;
-    parche.paginas_vistas = [num(d.pagina)||1];
+    // Las paginas vistas son las que se acaban de releer, no una sola. Antes
+    // esto se ponia siempre a [1] y un albaran fusionado de 3 folios perdia
+    // la constancia de tener las otras dos.
+    const vistas=[...new Set(fotos.map((f,k)=>num(f.pagina)||k+1))].sort((x,y)=>x-y);
+    parche.pagina  = vistas[0];
+    parche.paginas = Math.max(num(d.paginas)||1, vistas[vistas.length-1], vistas.length);
+    parche.paginas_vistas = vistas;
   }
   await sb(`compras_doc?id=eq.${doc.id}`,{method:'PATCH',body:JSON.stringify(parche)});
   if(!esFactura){
@@ -3622,9 +3671,9 @@ async function ejecutarReproceso(docs,etiqueta){
 async function reprocesarProveedor(provId){
   const p=proveedores.find(x=>x.id===provId);const nom=p?p.nombre:'';
   let docs;
-  try{docs=await sb(`compras_doc?proveedor_id=eq.${provId}&estado_detalle=in.(NO_CUADRA,REVISAR)&select=id,tipo,imagen_url,canal,num_documento,fecha,proveedor,proveedor_nif,proveedor_id,base,iva,total,descuento&order=created_at.desc`);}
+  try{docs=await sb(`compras_doc?proveedor_id=eq.${provId}&estado_detalle=in.(NO_CUADRA,REVISAR)&select=id,tipo,imagen_url,imagenes,pagina,paginas,canal,num_documento,fecha,proveedor,proveedor_nif,proveedor_id,base,iva,total,descuento&order=created_at.desc`);}
   catch(err){toast('Error: '+err.message,true);return;}
-  const conImg=docs.filter(d=>d.imagen_url);
+  const conImg=docs.filter(d=>fotosDe(d).length);
   if(!conImg.length){toast(`No hay documentos sin cuadrar (con foto) de ${nom}`);return;}
   const mins=Math.max(1,Math.ceil(conImg.length*13/60));
   if(!confirm(`Voy a volver a leer con la IA ${conImg.length} documento(s) sin cuadrar de ${nom}, aplicando sus pautas actuales.\n\nSolo toco los que están "no cuadra" o "revisar"; los correctos no se tocan. Tardará ~${mins} min, deja la pestaña abierta.\n\n¿Continuar?`))return;
@@ -3632,7 +3681,7 @@ async function reprocesarProveedor(provId){
 }
 async function reprocesarUnoModal(){
   if(!revisarDoc)return;
-  if(!revisarDoc.imagen_url){toast('Este documento no tiene foto guardada',true);return;}
+  if(!fotosDe(revisarDoc).length){toast('Este documento no tiene foto guardada',true);return;}
   if(!confirm('Voy a volver a leer este documento con la IA aplicando las pautas actuales del proveedor. Se sobreescriben los datos leídos (el centro asignado se mantiene).\n\n¿Continuar?'))return;
   const id=revisarDoc.id;
   toast('Releyendo documento…');
@@ -4299,8 +4348,8 @@ async function saveProv(id,campo,val){
       const tipoFiltro=(campo==='pautas')?'&tipo=eq.albaran':'&tipo=eq.factura';
       const etq=(campo==='pautas')?'albarán(es)':'factura(s)';
       let pend=[];
-      try{pend=await sb(`compras_doc?proveedor_id=eq.${id}&estado_detalle=in.(NO_CUADRA,REVISAR)${tipoFiltro}&select=id,tipo,imagen_url,canal,num_documento,fecha,proveedor,proveedor_nif,proveedor_id,base,iva,total,descuento&order=created_at.desc`);}catch(e){}
-      const conImg=pend.filter(d=>d.imagen_url);
+      try{pend=await sb(`compras_doc?proveedor_id=eq.${id}&estado_detalle=in.(NO_CUADRA,REVISAR)${tipoFiltro}&select=id,tipo,imagen_url,imagenes,pagina,paginas,canal,num_documento,fecha,proveedor,proveedor_nif,proveedor_id,base,iva,total,descuento&order=created_at.desc`);}catch(e){}
+      const conImg=pend.filter(d=>fotosDe(d).length);
       if(conImg.length){
         const mins=Math.max(1,Math.ceil(conImg.length*13/60));
         if(confirm(`Pauta guardada.\n\nHay ${conImg.length} ${etq} de ${p?p.nombre:'este proveedor'} sin cuadrar. ¿Volver a leerlos ahora con la IA aplicando la nueva pauta?\n\n(Solo se tocan los que no cuadran; tardará ~${mins} min.)`)){
