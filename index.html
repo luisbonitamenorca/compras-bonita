@@ -961,7 +961,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v53 · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
+  console.log('Compras Bonita · v54 · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -1747,35 +1747,22 @@ async function fusionarPaginaAlbaran(d,proveedor_id,pagina){
   await sb(`compras_doc?id=eq.${h.id}`,{method:'PATCH',body:JSON.stringify(parche)});
   return {accion:'fusionado', docId:h.id, aviso};
 }
+// El enlace con el catálogo ya NO se hace aquí. Lo resuelve el trigger
+// trg_linea_enlaza_producto en Postgres: busca el producto por referencia del
+// proveedor y, si el albarán no trae códigos, por nombre normalizado
+// (clave_producto) dentro del mismo proveedor; si no existe, lo da de alta y
+// actualiza su último precio.
+//
+// Estaba en JavaScript y solo enlazaba cuando el OCR había leído una referencia,
+// así que los proveedores que no imprimen código (Producción, Bodega, Santo
+// Domingo, Pain Pigalle...) se quedaban sin enlazar para siempre, y las líneas
+// creadas a mano en el modal de revisión tampoco enlazaban nunca. Con la lógica
+// en la base de datos hay un único criterio para todos los caminos de entrada,
+// y se pasa de dos llamadas por línea a una sola por documento.
 async function guardarLineasDoc(docId,dLineas,canal,proveedor_id,proveedorNombre){
-  const lineas=[];
-  for(const l of (dLineas||[])){
-    let producto_id=null;
-    const ref=(l.id_producto||'').trim();
-    if(ref && proveedor_id){
-      const ex=await sb(`compras_producto?proveedor_id=eq.${proveedor_id}&ref_proveedor=eq.${encodeURIComponent(ref)}&select=id`);
-      if(ex.length){
-        producto_id=ex[0].id;
-        await sb(`compras_producto?id=eq.${producto_id}`,{method:'PATCH',body:JSON.stringify({ultimo_precio:num(l.precio_unit)})});
-      }else{
-        let codigo=null;
-        try{
-          const r=await fetch(`${SB_URL}/rest/v1/rpc/compras_next_codigo`,{
-            method:'POST',headers:{apikey:SB_KEY,Authorization:`Bearer ${SB_KEY}`,'Content-Type':'application/json'},body:'{}'});
-          codigo=(await r.text()).replace(/"/g,'').trim()||null;
-        }catch(e){console.warn('codigo interno:',e.message);}
-        // proveedor_nombre NO se envía: lo rellena un trigger desde la ficha del
-        // proveedor. Guardar aquí lo que leyó el OCR producía 91 grafías del
-        // mismo proveedor donde su ficha solo tiene una, y rompía los filtros.
-        const np=await sb('compras_producto',{method:'POST',body:JSON.stringify({
-          codigo_interno:codigo,ref_proveedor:ref,nombre:l.producto||null,
-          proveedor_id,ultimo_precio:num(l.precio_unit)})});
-        producto_id=np[0].id;
-      }
-    }
-    lineas.push({doc_id:docId,id_producto:ref||null,producto:l.producto||null,
-      cantidad:num(l.cantidad),precio_unit:num(l.precio_unit),importe:num(l.importe),canal,producto_id});
-  }
+  const lineas=(dLineas||[]).map(l=>({
+    doc_id:docId,id_producto:(l.id_producto||'').trim()||null,producto:l.producto||null,
+    cantidad:num(l.cantidad),precio_unit:num(l.precio_unit),importe:num(l.importe),canal}));
   if(lineas.length)await sb('compras_linea',{method:'POST',body:JSON.stringify(lineas)});
 }
 async function procesarUno(c){
