@@ -961,7 +961,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v52 · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
+  console.log('Compras Bonita · v53 · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -1885,12 +1885,14 @@ async function procesarUno(c){
       // con claves mal normalizadas cuando normName() tenía el fallo del "S.L.",
       // y una casando con una cuenta de A3 que no le correspondía.
       nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,
+      codigo_a3:a3?a3.codigo:null,
       cuenta_proveedor:a3?a3.cuenta:null,
       cuenta_contable:a3?a3.contrapartida:null,
       autorizado:false})});
     proveedor_id=np[0].id;
     // refrescar el array local para que el siguiente documento ya lo conozca
     proveedores.push({id:np[0].id,nombre:d.proveedor||'(sin nombre)',nif:d.proveedor_nif||null,
+      codigo_a3:a3?a3.codigo:null,
       cuenta_proveedor:a3?a3.cuenta:null,cuenta_contable:a3?a3.contrapartida:null,autorizado:false,_n:0});
   }
 
@@ -3776,32 +3778,37 @@ async function saveIrpfProv(id,campo,val){
   }catch(err){toast('Error: '+err.message,true);loadProveedores();}
 }
 function celdaCuentaProv(p){
-  const cta=p.cuenta_proveedor||'';
-  const cod=cta?(a3CuentaACodigo[cta]||''):'';
-  const txt=cod||(cta?`(${cta})`:'');
-  const lupa=`<span class="link" style="font-size:11px;margin-left:4px" onclick="buscarCuentaProv('${p.id}')" title="Buscar en el maestro de A3">🔎</span>`;
-  const aviso=(cta&&!cod)?' title="Esta cuenta no está en el maestro de A3"':'';
-  return `<span class="editable" style="font-variant-numeric:tabular-nums"${aviso} onblur="saveCuentaProv('${p.id}',this.textContent)" contenteditable>${txt||'—'}</span>${cta?'':lupa}`;
+  const cod=codA3(p);
+  const lupa=`<span class="link" style="font-size:11px;margin-left:4px" onclick="buscarCuentaProv('${p.id}')" title="Buscarlo en el maestro de A3">🔎</span>`;
+  return `<span class="editable" style="font-variant-numeric:tabular-nums" title="Código de proveedor en A3. Se escribe a mano." onblur="saveCuentaProv('${p.id}',this.textContent)" contenteditable>${cod||'—'}</span>${cod?'':lupa}`;
 }
 async function saveCuentaProv(id,val){
   let txt=(val||'').trim().replace(/^\(|\)$/g,'');
   if(txt==='—')txt='';
-  let cuenta=null;
-  if(txt){
-    // Se admite tanto el código de A3 como la cuenta contable: lo que se guarda
-    // siempre es la cuenta, porque es de lo que tira la exportación.
-    if(/^(40|41)\d{7}$/.test(txt)){
-      cuenta=txt;
-      if(!a3CuentaACodigo[cuenta]){toast('Esa cuenta no está en el maestro de A3',true);loadProveedores();return;}
-    }else{
-      cuenta=a3CodigoACuenta[txt.toUpperCase()];
-      if(!cuenta){toast(`El código "${txt}" no existe en el maestro de A3`,true);loadProveedores();return;}
+  const cambio={};
+  if(!txt){
+    // Quitar el código: se limpian los dos campos, o el respaldo por cuenta
+    // seguiría pintando el código viejo en la celda.
+    cambio.codigo_a3=null; cambio.cuenta_proveedor=null;
+  }else if(/^(40|41)\d{7}$/.test(txt)){
+    // Han pegado la cuenta contable en vez del código. Si el maestro la conoce
+    // se traduce por comodidad; si no, se guarda la cuenta y la exportación
+    // resolverá el código por el maestro cuando exista.
+    cambio.cuenta_proveedor=txt;
+    if(a3CuentaACodigo[txt])cambio.codigo_a3=a3CuentaACodigo[txt];
+  }else{
+    // Caso normal: el código va tal cual, sin comprobar nada. Solo se descartan
+    // caracteres que A3 no acepta en el campo.
+    if(!/^[0-9A-Za-z._-]{1,12}$/.test(txt)){
+      toast('El código de A3 admite hasta 12 letras, números, punto, guion o guion bajo',true);renderProv();return;
     }
+    cambio.codigo_a3=txt.toUpperCase();
   }
   try{
-    await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify({cuenta_proveedor:cuenta})});
-    const p=proveedores.find(x=>x.id===id);if(p)p.cuenta_proveedor=cuenta;
-    toast(cuenta?`Código de A3 guardado: ${a3CuentaACodigo[cuenta]}`:'Código de A3 quitado');
+    await sb(`compras_proveedor?id=eq.${id}`,{method:'PATCH',body:JSON.stringify(cambio)});
+    const p=proveedores.find(x=>x.id===id);if(p)Object.assign(p,cambio);
+    const puesto=cambio.codigo_a3||(cambio.cuenta_proveedor?`cuenta ${cambio.cuenta_proveedor}`:'');
+    toast(puesto?`Código de A3 guardado: ${puesto}`:'Código de A3 quitado');
     renderProv();
   }catch(err){toast('Error: '+err.message,true);loadProveedores();}
 }
@@ -3816,10 +3823,10 @@ async function cuentaA3(nif,nombre){
 async function buscarCuentaProv(id){
   const p=proveedores.find(x=>x.id===id);if(!p)return;
   const hit=await cuentaA3(p.nif,p.nombre);
-  if(!hit){toast('No está en el maestro de A3. Escríbela a mano.',true);return;}
-  await saveCuentaProv(id,hit.cuenta);
+  if(!hit){toast('No está en el maestro de A3 (será de alta reciente). Escribe el código a mano.',true);return;}
+  await saveCuentaProv(id,hit.codigo||hit.cuenta);
   renderProv();   // se llamaba renderProveedores(), que no existe
-  toast(`${hit.cuenta} · ${hit.nombre} (por ${hit.via})`);
+  toast(`${hit.codigo||hit.cuenta} · ${hit.nombre} (por ${hit.via})`);
 }
 async function saveCuenta(id,val){
   try{
@@ -3962,11 +3969,19 @@ function exportConcil(){
   XLSX.writeFile(wb,`conciliacion_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
-// El proveedor guarda la cuenta contable (40xxxx/41xxxx), pero A3 identifica al
-// proveedor por su código interno (3, A57, 136...). Son 1 a 1 en el maestro, así
-// que se muestra y se edita el código, y por debajo se sigue guardando la cuenta,
-// que es lo que usa la exportación.
+// A3 identifica al proveedor por su código interno (3, A57, 142...). Ese código
+// se guarda TAL CUAL en compras_proveedor.codigo_a3: es un campo opaco, no se
+// deduce de la cuenta contable. La relación que parecía existir entre cuenta y
+// código era una coincidencia de los registros 645/646, no una regla.
+// El maestro (compras_cuenta_a3) es solo una ayuda de búsqueda —una foto de A3
+// de un día concreto—, NUNCA una lista blanca: los proveedores dados de alta en
+// A3 después de esa foto (142, 143, 144...) no están en él y se tenían que poder
+// escribir a mano. cuenta_proveedor se mantiene como respaldo de lectura para
+// las fichas antiguas que aún no tienen codigo_a3.
 let a3CuentaACodigo={}, a3CodigoACuenta={};
+// Código de A3 efectivo de una ficha: el guardado manda; si no hay, se deduce
+// del maestro por la cuenta. Es lo mismo que hace COALESCE en compras_a3_cabecera.
+function codA3(p){ return p.codigo_a3 || a3CuentaACodigo[p.cuenta_proveedor] || ''; }
 async function cargarMaestroA3(){
   if(Object.keys(a3CuentaACodigo).length)return;
   try{
@@ -3982,7 +3997,7 @@ async function cargarMaestroA3(){
 async function loadProveedores(){
   try{
     await cargarMaestroA3();
-    proveedores=await sb('compras_proveedor?select=id,nombre,nif,departamento,cuenta_contable,cuenta_proveedor,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url,retencion_modelo,retencion_pct&order=nombre.asc');
+    proveedores=await sb('compras_proveedor?select=id,nombre,nif,departamento,cuenta_contable,cuenta_proveedor,codigo_a3,critico,pautas,pauta_factura,alias,autorizado,muestra_url,muestra_factura_url,retencion_modelo,retencion_pct&order=nombre.asc');
     // Candidatos a duplicado. La vista propone; fusionar sigue siendo decisión
     // de una persona, porque "un nombre contiene al otro" también casaría
     // empresas legítimamente distintas.
@@ -4005,18 +4020,18 @@ function renderProv(){
   let rows=[...proveedores];
   const q=(document.getElementById('provBuscar')?.value||'').trim().toLowerCase();
   if(q) rows=rows.filter(p=>{
-    const cod=a3CuentaACodigo[p.cuenta_proveedor]||'';
+    const cod=codA3(p);
     return [p.nombre,p.nif,p.departamento,p.cuenta_proveedor,cod,p.alias]
       .some(v=>String(v||'').toLowerCase().includes(q));
   });
   const f=document.getElementById('provFiltro')?.value||'';
   if(f==='irpf')    rows=rows.filter(p=>p.retencion_modelo);
   if(f==='sinirpf') rows=rows.filter(p=>!p.retencion_modelo && provConRetencion.has(p.id));
-  if(f==='sincod')  rows=rows.filter(p=>!a3CuentaACodigo[p.cuenta_proveedor]);
+  if(f==='sincod')  rows=rows.filter(p=>!codA3(p));
   if(f==='nuevos')  rows=rows.filter(p=>p.autorizado===false);
   const st=sortState.proveedores;
   const keymap={nombre:p=>p.nombre,nif:p=>p.nif,depto:p=>p.departamento||'',crit:p=>p.critico?1:0,docs:p=>p._n,
-                cta:p=>p.cuenta_contable||'',cod:p=>a3CuentaACodigo[p.cuenta_proveedor]||'',
+                cta:p=>p.cuenta_contable||'',cod:p=>codA3(p),
                 irpf:p=>p.retencion_modelo||'zzz',estado:p=>p.autorizado===false?0:1};
   const todas=rows;
   rows=aplicaColFiltros('proveedores',rows,keymap);
@@ -4246,7 +4261,7 @@ function exportProv(){
   const keymap={nombre:p=>p.nombre,nif:p=>p.nif,depto:p=>p.departamento||'',crit:p=>p.critico?1:0,docs:p=>p._n};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(p=>({Nombre:p.nombre||'','CIF / NIF':p.nif||'',Departamento:p.departamento||'',
-    'Cuenta gasto':p.cuenta_contable||'','Cód. A3':(a3CuentaACodigo[p.cuenta_proveedor]||''),'Modelo IRPF':p.retencion_modelo||'','% IRPF':p.retencion_pct??'','Cuenta proveedor':p.cuenta_proveedor||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
+    'Cuenta gasto':p.cuenta_contable||'','Cód. A3':codA3(p),'Modelo IRPF':p.retencion_modelo||'','% IRPF':p.retencion_pct??'','Cuenta proveedor':p.cuenta_proveedor||'',Crítico:p.critico?'SI':'',Pautas:p.pautas||'',Documentos:p._n??0,Estado:p.autorizado===false?'NUEVO':'OK'}));
   if(!data.length){toast('No hay proveedores que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,ws,'Proveedores');
