@@ -375,6 +375,7 @@
           <div style="display:flex;gap:24px;flex-wrap:wrap">
             <div class="total"><small>Albaranes registrados</small><span id="albCount">0</span></div>
             <div class="total"><small>Base imponible (sin IVA)</small><span id="albTotal">0,00 €</span></div>
+            <div class="total" style="display:none;cursor:help"><small>&#128992; Incompletos</small><span id="albIncompletos">0</span></div>
           </div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="detectarDuplicados('albaran')">🔍 Detectar duplicados</button>
@@ -2145,8 +2146,32 @@ function exportXlsx(){
 
 /* ---------- albaranes ---------- */
 async function loadAlbaranes(){
-  try{albaranes=await sbAll("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,origen,created_at&order=created_at.desc");renderAlb();renderConciliacion();}
+  try{albaranes=await sbAll("compras_doc?tipo=eq.albaran&select=id,fecha,proveedor,proveedor_id,num_documento,canal,base,iva,retencion,retencion_pct,total,estado,estado_detalle,imagen_url,origen,created_at,pagina,paginas,paginas_vistas&order=created_at.desc");renderAlb();renderConciliacion();}
   catch(err){toast('No pude cargar albaranes: '+err.message,true);}
+}
+/* Aviso de albaran incompleto.
+   El OCR ya lee "PAG 1/3" y lo guarda en `paginas`; la fusion de folios va
+   anotando en `paginas_vistas` los que se han absorbido. Nadie comparaba los
+   dos campos, y por eso un albaran al que le faltan folios podia salir en
+   verde: las lineas que si se leyeron cuadran con el total impreso en la
+   ultima pagina, que es justo la que suele fotografiarse. El criterio de
+   "paginas vistas" es el mismo que usa fusionarPaginaAlbaran. */
+function pagsFaltan(a){
+  const tot=num(a.paginas)||1;
+  const vis=(Array.isArray(a.paginas_vistas)&&a.paginas_vistas.length)
+    ? a.paginas_vistas : [num(a.pagina)||1];
+  if(tot<=vis.length) return null;
+  const faltan=[];
+  for(let p=1;p<=tot;p++) if(!vis.includes(p)) faltan.push(p);
+  return {tot,vis,faltan};
+}
+function avisoPags(a){
+  const f=pagsFaltan(a);
+  if(!f) return '';
+  const txt=f.faltan.length
+    ? `falta ${f.faltan.length>1?'n las paginas':' la pagina'} ${f.faltan.join(', ')} de ${f.tot}`
+    : `solo ${f.vis.length} de ${f.tot} paginas cargadas`;
+  return ` <span style="cursor:help" title="Albaran incompleto: ${txt}. Las lineas que faltan no estan cargadas.">\u{1F7E0}</span>`;
 }
 function renderAlb(){
   let rows=[...albaranes];
@@ -2161,11 +2186,18 @@ function renderAlb(){
     thh('albaranes','fecha','Fecha','fecha')+thh('albaranes','cargado','Cargado')+thh('albaranes','prov','Proveedor')+thh('albaranes','ndoc','Nº albarán')+
     thh('albaranes','centro','Centro')+thh('albaranes','base','Base','num')+thh('albaranes','iva','IVA','num')+thh('albaranes','reten','Retención','num')+thh('albaranes','total','Total','num')+thh('albaranes','estado','Estado')+'<th>Revisar</th><th></th>';
   const tb=document.getElementById('albBody');
+  const nInc=albaranes.filter(pagsFaltan).length;
   document.getElementById('albCount').textContent=albaranes.length;
+  const elInc=document.getElementById('albIncompletos');
+  if(elInc){
+    elInc.textContent=nInc;
+    elInc.parentElement.style.display=nInc?'':'none';
+    elInc.parentElement.title=nInc?'Albaranes que dicen tener mas paginas de las que se han cargado':'';
+  }
   document.getElementById('albTotal').textContent=fmt(albaranes.reduce((s,a)=>s+(num(a.base)||0),0));
   document.getElementById('emptyA').style.display=albaranes.length?'none':'block';
   tb.innerHTML=rows.map(a=>`<tr>
-    <td class="fecha">${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}</td>
+    <td class="fecha">${a.fecha||''}</td><td style="white-space:nowrap">${fmtCarga(a.created_at)}</td><td>${a.origen==='correo'?'<span title="Recibido por correo">\u{1F4E7}</span> ':''}${a.proveedor||''}</td><td>${a.num_documento||''}${avisoPags(a)}</td>
     <td>${selectCentro(a.id,a.canal)}</td><td class="num">${fmt(a.base)}</td><td class="num">${fmt(a.iva)}</td><td class="num">${a.retencion?'-'+fmt(a.retencion):''}</td><td class="num">${fmt(a.total)}</td>
     <td>${estBadge(a.estado_detalle)}</td>
     <td><span class="link" onclick="revisar('${a.id}')">ver foto + detalle</span></td>
@@ -2179,6 +2211,9 @@ function exportAlb(){
   const keymap={fecha:a=>a.fecha,prov:a=>a.proveedor,ndoc:a=>a.num_documento,centro:a=>a.canal,total:a=>a.total,estado:a=>a.estado_detalle||'REVISAR'};
   if(st.key&&keymap[st.key])rows=sortRows(rows,keymap[st.key],st.dir);
   const data=rows.map(a=>({Fecha:a.fecha||'',Cargado:a.created_at?new Date(a.created_at).toLocaleString('es-ES'):'',Proveedor:a.proveedor||'','Nº albarán':a.num_documento||'',
+    'Páginas':(function(){const f=pagsFaltan(a);const t=num(a.paginas)||1;
+      if(f)return `${f.vis.length}/${f.tot} (faltan ${f.faltan.join(', ')})`;
+      return t>1?`${t}/${t}`:'';})(),
     Centro:a.canal||'',Base:a.base??'',IVA:a.iva??'','Retención':a.retencion??'','Total':a.total??'',Estado:estTexto(a.estado_detalle)}));
   if(!data.length){toast('No hay albaranes que exportar',true);return;}
   const ws=XLSX.utils.json_to_sheet(data),wb=XLSX.utils.book_new();
