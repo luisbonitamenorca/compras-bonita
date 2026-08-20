@@ -136,6 +136,13 @@
   .pill.ok{background:var(--ok-soft);color:var(--ok)}.pill.rev{background:var(--warn-soft);color:var(--warn)}
 
   table{width:100%;border-collapse:collapse;font-size:12.5px}
+  /* Las tablas anchas ruedan dentro de su propio marco, con altura acotada:
+     así la barra horizontal queda SIEMPRE a la vista (en Windows vivía al
+     final de la tabla entera y con 154 filas nadie la encontraba) y la
+     cabecera se queda fija al bajar. */
+  .tabla-scroll{overflow:auto;max-height:calc(100vh - 230px)}
+  .tabla-scroll thead th{position:sticky;top:0;z-index:2;background:var(--bg)}
+  .tabla-scroll thead tr.fltrow th,.tabla-scroll thead tr.fltrow td{position:sticky;top:27px;z-index:2;background:var(--bg)}
   th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:500;
     padding:6px 8px;border-bottom:0.5px solid var(--line);white-space:nowrap;background:var(--bg)}
   th.sortable{cursor:pointer;user-select:none}
@@ -343,7 +350,7 @@
             <button class="btn" onclick="exportXlsx()">Exportar Excel</button>
           </div>
         </div>
-        <div style="overflow-x:auto">
+        <div class="tabla-scroll">
           <table>
             <thead><tr id="headCompras"></tr><tr id="fltCompras" class="fltrow"></tr></thead>
             <tbody id="tbody"></tbody>
@@ -388,7 +395,7 @@
             <button class="btn" onclick="exportAlb()">Exportar Excel</button>
           </div>
         </div>
-        <div style="overflow-x:auto">
+        <div class="tabla-scroll">
           <table>
             <thead><tr id="headAlb"></tr><tr id="fltAlb" class="fltrow"></tr></thead>
             <tbody id="albBody"></tbody>
@@ -414,7 +421,7 @@
             <button class="btn" onclick="exportFac()">Exportar Excel</button>
           </div>
         </div>
-        <div style="overflow-x:auto">
+        <div class="tabla-scroll">
           <table>
             <thead><tr id="headFac"></tr><tr id="fltFac" class="fltrow"></tr></thead>
             <tbody id="facBody"></tbody>
@@ -441,7 +448,7 @@
           </div>
         </div>
         <div id="concilKpis" class="kpis"></div>
-        <div style="overflow-x:auto">
+        <div class="tabla-scroll">
           <table>
             <thead><tr id="headConcil"></tr></thead>
             <tbody id="concilBody"></tbody>
@@ -465,7 +472,7 @@
           </div>
         </div>
         <div id="buzKpis" class="kpis"></div>
-        <div style="overflow-x:auto">
+        <div class="tabla-scroll">
           <table>
             <thead><tr>
               <th>Fecha</th><th>Remitente</th><th>Asunto</th><th>Carpeta</th>
@@ -497,7 +504,7 @@
           </div>
         </div>
         <div id="a3Kpis" class="kpis"></div>
-        <div style="overflow-x:auto">
+        <div class="tabla-scroll">
           <table>
             <thead><tr id="headA3"></tr></thead>
             <tbody id="a3Body"></tbody>
@@ -524,7 +531,7 @@
         </div>
         <div id="dupProdBox" style="display:none;margin-bottom:14px"></div>
         <div id="selProdBar"></div>
-        <div style="overflow-x:auto">
+        <div class="tabla-scroll">
           <table>
             <thead><tr id="headProd"></tr><tr id="fltProd" class="fltrow"></tr></thead>
             <tbody id="prodBody"></tbody>
@@ -558,7 +565,7 @@
           </div>
         </div>
         <div id="dupProvBox" style="display:none;margin-bottom:16px"></div>
-        <div style="overflow-x:auto">
+        <div class="tabla-scroll">
           <table>
             <thead><tr id="headProv"></tr><tr id="fltProv" class="fltrow"></tr></thead>
             <tbody id="provBody"></tbody>
@@ -984,7 +991,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v56 · el nombre propio ya no puede ser el proveedor (se limpia o se deja vacío para revisión) · los adjuntos del front movil (correo_id nulo) pueden ser albaranes: la regla de solo-facturas es para el correo de verdad · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
+  console.log('Compras Bonita · v57 · tablas con barra de scroll siempre visible y cabecera fija (Windows) · el nombre propio ya no puede ser el proveedor (se limpia o se deja vacío para revisión) · los adjuntos del front movil (correo_id nulo) pueden ser albaranes: la regla de solo-facturas es para el correo de verdad · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
