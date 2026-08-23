@@ -390,6 +390,7 @@
           </div>
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="detectarDuplicados('albaran')">🔍 Detectar duplicados</button>
+            <button class="btn ghost" onclick="reprocesarDudosos('albaran')" title="Vuelve a leer con el modelo superior todos los albaranes en revisar o sin cuadrar">↻ Reprocesar dudosos</button>
             <button class="btn ghost" onclick="recalcularEstados()">♻️ Recalcular estados</button>
             <button class="btn ghost" onclick="loadAlbaranes()">↻ Refrescar</button>
             <button class="btn" onclick="exportAlb()">Exportar Excel</button>
@@ -416,6 +417,7 @@
           <div style="display:flex;gap:10px">
             <button class="btn ghost" onclick="limpiarLineasFacturas()">🧹 Limpiar detalle viejo</button>
             <button class="btn ghost" onclick="detectarDuplicados('factura')">🔍 Detectar duplicados</button>
+            <button class="btn ghost" onclick="reprocesarDudosos('factura')" title="Vuelve a leer con el modelo superior todas las facturas en revisar o sin cuadrar">↻ Reprocesar dudosos</button>
             <button class="btn ghost" onclick="recalcularEstadosFacturas()" title="Vuelve a comprobar que los importes de cada factura cuadren, con los controles actuales">♻︎ Recalcular estados</button>
             <button class="btn ghost" onclick="loadFacturas()">↻ Refrescar</button>
             <button class="btn" onclick="exportFac()">Exportar Excel</button>
@@ -525,6 +527,7 @@
         <div class="barrow">
           <div class="total"><small>Productos</small><span id="prodCount">0</span></div>
           <div style="display:flex;gap:10px">
+            <button class="btn ghost" onclick="detectarDupProductos()" title="Busca productos duplicados por parecido de nombre y por clave normalizada, con fusión automática de los seguros">🔍 Detectar duplicados</button>
             <button class="btn ghost" onclick="loadProductos()">↻ Refrescar</button>
             <button class="btn" onclick="exportProd()">Exportar Excel</button>
           </div>
@@ -991,7 +994,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v58 · escalada de modelo: si la lectura no cuadra, segunda pasada con Opus (y el reproceso manual va directo a Opus) · tablas con barra de scroll siempre visible y cabecera fija (Windows) · el nombre propio ya no puede ser el proveedor (se limpia o se deja vacío para revisión) · los adjuntos del front movil (correo_id nulo) pueden ser albaranes: la regla de solo-facturas es para el correo de verdad · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
+  console.log('Compras Bonita · v59 · reprocesar dudosos en lote (albaranes y facturas) y detector-fusionador de productos duplicados · escalada de modelo: si la lectura no cuadra, segunda pasada con Opus (y el reproceso manual va directo a Opus) · tablas con barra de scroll siempre visible y cabecera fija (Windows) · el nombre propio ya no puede ser el proveedor (se limpia o se deja vacío para revisión) · los adjuntos del front movil (correo_id nulo) pueden ser albaranes: la regla de solo-facturas es para el correo de verdad · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -3791,6 +3794,61 @@ async function reprocesarUnoModal(){
     toast('No se pudo reprocesar: '+err.message,true);
     alert('No se pudo reprocesar este documento.\n\n'+err.message);
   }
+}
+
+/* ---------- reprocesar dudosos en lote (v59) ---------- */
+// Relee con el modelo superior TODOS los documentos del tipo pedido que estén
+// en revisar o sin cuadrar (los ya correctos ni se tocan). Uno a uno, en
+// orden: cada reproceso aplica las pautas actuales del proveedor.
+async function reprocesarDudosos(tipo){
+  const filtroTipo = tipo==='factura' ? 'tipo=eq.factura' : 'tipo=neq.factura';
+  let docs=[];
+  try{ docs=await sb(`compras_doc?${filtroTipo}&estado=eq.REVISAR&select=*&order=created_at.desc&limit=100`); }
+  catch(e){ toast('No pude cargar los dudosos: '+e.message,true); return; }
+  const cands=(docs||[]).filter(d=>d.estado_detalle!=='CORRECTO'&&d.estado_detalle!=='DUPLICADO'&&fotosDe(d).length);
+  const sinFoto=(docs||[]).filter(d=>d.estado_detalle!=='CORRECTO'&&d.estado_detalle!=='DUPLICADO'&&!fotosDe(d).length).length;
+  if(!cands.length){toast('No hay dudosos con foto que reprocesar'+(sinFoto?` (${sinFoto} sin foto guardada)`:''));return;}
+  if(!confirm(`Se van a releer ${cands.length} documento(s) con el modelo superior, aplicando las pautas actuales de cada proveedor.`
+    +(sinFoto?`\n(${sinFoto} dudoso(s) más no tienen foto guardada y no se pueden releer.)`:'')
+    +`\n\nPuede tardar unos ${Math.max(1,Math.ceil(cands.length*0.5))} min. No cierres la pestaña.\n\n¿Continuar?`))return;
+  let arreglados=0,persisten=0,fallos=0;
+  for(let i=0;i<cands.length;i++){
+    toast(`Releyendo ${i+1}/${cands.length}: ${cands[i].proveedor||'(sin proveedor)'} ${cands[i].num_documento||''}…`);
+    try{
+      const r=await reprocesarDoc(cands[i]);
+      if(r.ok&&r.estado==='CORRECTO')arreglados++; else persisten++;
+    }catch(e){fallos++;console.warn('reproceso en lote:',e.message);}
+  }
+  await loadAlbaranes();await loadFacturas();await loadCompras();
+  toast(`Reproceso en lote terminado: ${arreglados} ahora cuadran · ${persisten} siguen para revisar${fallos?` · ${fallos} con error`:''}`);
+}
+
+/* ---------- detectar y fusionar productos duplicados (v59) ---------- */
+// Dos redes complementarias: el parecido de nombres (la caja de duplicados de
+// siempre, que respeta la regla de Luis de no fusionar lo que aparece junto
+// en un albarán) y la CLAVE NORMALIZADA (mismo producto escrito distinto:
+// el caso de bodega/producción), que se puede fusionar de una tacada.
+async function detectarDupProductos(){
+  toast('Buscando duplicados…');
+  try{ dupProd=await sb('compras_producto_duplicados?select=*'); }catch(e){ dupProd=[]; }
+  let porClave=[];
+  try{ porClave=await sb('rpc/fusionar_productos_por_clave',{method:'POST',body:JSON.stringify({p_dry_run:true})})||[]; }
+  catch(e){ console.warn('fusion por clave:',e.message); }
+  const porParecido=(dupProd||[]).filter(d=>d.nivel!=='bloqueada').length;
+  const c=document.getElementById('dupProdBox'); if(c)c.setAttribute('data-abierto','1');
+  renderDupProd();
+  if(!porParecido&&!porClave.length){toast('Sin duplicados a la vista: catálogo limpio ✓');return;}
+  if(porClave.length){
+    const detalle=porClave.slice(0,8).map(g=>`  · ${g.nombre_final} (absorbe ${g.absorbidos})`).join('\n');
+    if(confirm(`${porClave.length} grupo(s) tienen LA MISMA clave normalizada — el mismo producto escrito distinto:\n\n${detalle}${porClave.length>8?'\n  …':''}\n\nLa fusión automática es segura: sobrevive el de más líneas y NUNCA une dos que aparezcan juntos en un mismo albarán.\n\n¿Fusionarlos ahora?`)){
+      try{
+        const r=await sb('rpc/fusionar_productos_por_clave',{method:'POST',body:JSON.stringify({p_dry_run:false})});
+        toast(`Fusionados ${(r||[]).length} grupo(s) de productos ✓`);
+        await loadProductos();
+      }catch(e){ toast('La fusión falló: '+e.message,true); }
+    }
+  }
+  if(porParecido)toast(`Además hay ${porParecido} posible(s) duplicado(s) por parecido de nombre: revísalos en la caja de arriba`);
 }
 
 /* ---------- clasificar centro desde el modal ---------- */
