@@ -618,6 +618,10 @@
 // aparece ahí es que el modelo ha cogido el NIF del cliente. Los sufijos -01 y
 // -02 sí son proveedores internos legítimos (Bodega y Producción) y se respetan.
 const NIF_PROPIO = 'B01996826';
+function norm_nif_js(t){
+  if(!t||!String(t).trim())return null;
+  return String(t).toUpperCase().replace(/[^A-Z0-9]/g,'').replace(/^ES(?=[A-Z0-9]{9})/,'').slice(0,9)||null;
+}
 function esNifPropioSinSufijo(nif){
   const k=String(nif||'').toUpperCase().replace(/[^A-Z0-9-]/g,'');
   return k===NIF_PROPIO;
@@ -994,7 +998,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v59 · reprocesar dudosos en lote (albaranes y facturas) y detector-fusionador de productos duplicados · escalada de modelo: si la lectura no cuadra, segunda pasada con Opus (y el reproceso manual va directo a Opus) · tablas con barra de scroll siempre visible y cabecera fija (Windows) · el nombre propio ya no puede ser el proveedor (se limpia o se deja vacío para revisión) · los adjuntos del front movil (correo_id nulo) pueden ser albaranes: la regla de solo-facturas es para el correo de verdad · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
+  console.log('Compras Bonita · v60 · el reproceso re-evalúa el proveedor cuando el CIF leído casa exacto con otro del maestro · reprocesar dudosos en lote (albaranes y facturas) y detector-fusionador de productos duplicados · escalada de modelo: si la lectura no cuadra, segunda pasada con Opus (y el reproceso manual va directo a Opus) · tablas con barra de scroll siempre visible y cabecera fija (Windows) · el nombre propio ya no puede ser el proveedor (se limpia o se deja vacío para revisión) · los adjuntos del front movil (correo_id nulo) pueden ser albaranes: la regla de solo-facturas es para el correo de verdad · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -3661,6 +3665,27 @@ async function reprocesarDoc(doc){
   }
   const _fixR=autocorregirDesglose(d);
   if(_fixR.length) console.warn('Autocorregido al reprocesar '+(doc.num_documento||'')+': '+_fixR.join(' · '));
+
+  // ── v60: el proveedor también se re-evalúa, pero SOLO con prueba fuerte.
+  // El reproceso siempre respetó el proveedor guardado (los cambios a mano
+  // mandan) — hasta que un albarán de Morvedra entró como Bodega Interno y
+  // ni diez reprocesos lo habrían corregido. Regla: si la nueva lectura trae
+  // un CIF que casa EXACTO con OTRO proveedor del maestro, se cambia (y las
+  // líneas se re-enlazan a su catálogo); si solo cambia el nombre, aviso en
+  // consola y se respeta el guardado, como siempre.
+  {
+    const nifLeido=norm_nif_js(d.proveedor_nif);
+    if(nifLeido && !esNifPropioSinSufijo(d.proveedor_nif)){
+      const otro=proveedores.find(p=>p.nif_norm===nifLeido);
+      if(otro && doc.proveedor_id && otro.id!==doc.proveedor_id){
+        console.warn('Reproceso: el CIF leído ('+d.proveedor_nif+') es de «'+otro.nombre+'», no de «'+(doc.proveedor||'')+'». Se cambia el proveedor.');
+        await sb(`compras_linea?doc_id=eq.${doc.id}`,{method:'PATCH',body:JSON.stringify({producto_id:null})});
+        await sb(`compras_doc?id=eq.${doc.id}`,{method:'PATCH',body:JSON.stringify({proveedor_id:otro.id,proveedor:otro.nombre})});
+        doc.proveedor_id=otro.id; doc.proveedor=otro.nombre;
+        toast('Proveedor corregido por CIF: '+otro.nombre);
+      }
+    }
+  }
   const esFactura=(doc.tipo==='factura');
   const canal=doc.canal||null;            // se respeta el centro asignado a mano
   // red de seguridad: factura con los albaranes metidos en "lineas"
