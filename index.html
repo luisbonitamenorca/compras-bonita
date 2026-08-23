@@ -991,7 +991,7 @@ function estadoCorreo(txt){
 // trabajando de verdad); en forzado bastan 90 s, porque ningún documento tarda
 // tanto y quien pulsa el botón está viendo que no pasa nada.
 async function sincronizarCorreo(forzado=false){
-  console.log('Compras Bonita · v57 · tablas con barra de scroll siempre visible y cabecera fija (Windows) · el nombre propio ya no puede ser el proveedor (se limpia o se deja vacío para revisión) · los adjuntos del front movil (correo_id nulo) pueden ser albaranes: la regla de solo-facturas es para el correo de verdad · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
+  console.log('Compras Bonita · v58 · escalada de modelo: si la lectura no cuadra, segunda pasada con Opus (y el reproceso manual va directo a Opus) · tablas con barra de scroll siempre visible y cabecera fija (Windows) · el nombre propio ya no puede ser el proveedor (se limpia o se deja vacío para revisión) · los adjuntos del front movil (correo_id nulo) pueden ser albaranes: la regla de solo-facturas es para el correo de verdad · el enlace de linea con el catalogo lo resuelve Postgres (trigger trg_linea_enlaza_producto): por referencia del proveedor y, si el albaran no trae codigos, por nombre normalizado dentro del mismo proveedor; asi enlazan tambien Produccion, Bodega, Santo Domingo o Pain Pigalle, y las lineas creadas a mano en el modal de revision · el codigo de proveedor de A3 se escribe a mano y se guarda tal cual en codigo_a3: el maestro es solo ayuda de busqueda, ya no una lista blanca que bloqueaba las altas recientes (142, 143, 144...) · las claves normalizadas las calcula Postgres, no el navegador · seleccion multiple de productos para borrar y fusionar · las acciones y exportaciones respetan los filtros de columna · borrado de productos sin uso · frecuencia de uso por producto (albaranes en los que aparece) · nombre de proveedor unificado en Compras, Albaranes y Facturas · filtros por columna en todos los listados, fusion manual de productos y limpieza del catalogo · CIF en el listado de productos y nombre de proveedor derivado de la ficha · validacion de CIF por digito de control y comparacion visual de proveedores · código interno de la app en Compras (para Ratios) · desglose de IVA visible, bloqueos de A3 en el listado y en el Excel, matriz centro x IVA · pies de IVA con varias filas leidos y autocorregidos, precio unitario editable y aviso de linea descuadrada (13-ago-2026)');
   if(_sincronizando){
     if(forzado)toast('Ya hay una revisión del correo en marcha');
     return;
@@ -1197,10 +1197,10 @@ async function sbUpload(file){
 // Última foto de la cuota que nos queda, leída de las cabeceras que devuelve la
 // API. Sirve para ajustar el ritmo con datos en vez de dormir un tiempo fijo.
 let _cuota={peticiones:null,tokensEntrada:null,reinicio:null,visto:0};
-async function callAI(content){
+async function callAI(content,modelo){
   const r=await fetch("/api/anthropic",{
     method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:8192,messages:[{role:"user",content}]})
+    body:JSON.stringify({model:modelo||"claude-sonnet-4-6",max_tokens:8192,messages:[{role:"user",content}]})
   });
   try{
     const pet=r.headers.get('anthropic-ratelimit-requests-remaining');
@@ -1489,6 +1489,23 @@ function espera(ms){
   return new Promise(r=>{const id=Math.random().toString(36).slice(2);
     w._pend.set(id,r); w.postMessage({id,ms});});
 }
+
+function lecturaEvaluable(d,docTipo){
+  if(docTipo==='factura'){
+    const total=num(d.total);
+    if(total==null) return 'falta el total';
+    autocorregirDesglose(d);
+    const c=cuadreFactura(num(d.base),num(d.iva),Math.abs(num(d.retencion)||0),total,d.desglose_iva);
+    return c.ok?null:(c.motivo||'los importes no cuadran');
+  }
+  if(!(d.lineas||[]).length) return 'no se han leído líneas';
+  const suma=(d.lineas||[]).reduce((s,l)=>s+(num(l.importe)||0),0);
+  const desc=num(d.descuento)||0;
+  const c=cuadreAlbaranes(suma-desc,num(d.base),num(d.total));
+  return c.ok===true?null:'la suma de líneas ('+suma.toFixed(2)+') no cuadra con la base/total del pie';
+}
+
+const AVISO_ESCALADA="\n\nSEGUNDA PASADA CON MÁXIMA ATENCIÓN: una lectura anterior de este documento no cuadró (%%). Revisa con especial cuidado los DESCUENTOS — por línea y los GLOBALES del pie (rappels, dto. fijo, pronto pago) —, recargos, portes y el desglose de IVA del pie. Si el pie tiene varias filas de IVA, la base del documento es la SUMA de todas. Extrae los importes exactamente como aparecen impresos.";
 
 function construirPromptOCR(t,esCorreo){
   const reglasTxt=reglas.length?reglas.map(r=>'- '+r.texto).join('\n'):'(todavía sin reglas)';
@@ -1884,7 +1901,29 @@ async function procesarUno(c){
   }
   let canal=canalDeTerminal(d.codigo_terminal)||canalCanonico(d.canal);
   // si el usuario fijó el tipo (factura/albaran), se respeta; si es auto, lo decide la IA
-  const docTipo=(tipoUsado==='auto')?(d.tipo||'factura'):tipoUsado;
+  let docTipo=(tipoUsado==='auto')?(d.tipo||'factura'):tipoUsado;
+
+  // ── ESCALADA (v58): si la lectura no cuadra, una SEGUNDA PASADA con un
+  // modelo superior antes de dar el documento por malo.
+  {
+    const problema=lecturaEvaluable(d,docTipo);
+    if(problema && d.tipo!=='otro'){
+      try{
+        console.warn('Escalada: la lectura no cuadra ('+problema+'), segunda pasada con Opus…');
+        const cruda2=await callAI([block,{type:"text",text:prompt+AVISO_ESCALADA.replace('%%',problema)}],'claude-opus-5');
+        const d2=parseJson(cruda2);
+        const tipo2=(tipoUsado==='auto')?(d2.tipo||'factura'):tipoUsado;
+        if(!lecturaEvaluable(d2,tipo2)){
+          d=d2; d._escalado=true;
+          canal=canalDeTerminal(d.codigo_terminal)||canalCanonico(d.canal);
+          docTipo=tipo2;
+          console.warn('Escalada: la segunda pasada cuadra, se usa esa lectura.');
+        }else{
+          console.warn('Escalada: la segunda tampoco cuadra, se conserva la primera.');
+        }
+      }catch(e){ console.warn('Escalada fallida, se mantiene la primera lectura:', e.message); }
+    }
+  }
 
   // Por correo SOLO entran facturas. Los albaranes se cargan a mano (foto o PDF),
   // porque al buzón llegan albaranes que no son compras nuestras —los de Tenim
@@ -3595,7 +3634,7 @@ async function reprocesarDoc(doc){
 
   let cruda;
   try{
-    cruda=await callAI([...porUrl,{type:"text",text:prompt}]);
+    cruda=await callAI([...porUrl,{type:\"text\",text:prompt+AVISO_ESCALADA.replace('%%','se está reprocesando a mano')}],'claude-opus-5');
   }catch(e1){
     // Si la API no puede alcanzar las URL, se vuelve al método antiguo.
     console.warn('Reproceso por URL falló, reintento con base64:',e1.message);
