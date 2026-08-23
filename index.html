@@ -3634,7 +3634,7 @@ async function reprocesarDoc(doc){
 
   let cruda;
   try{
-    cruda=await callAI([...porUrl,{type:\"text\",text:prompt+AVISO_ESCALADA.replace('%%','se está reprocesando a mano')}],'claude-opus-5');
+    cruda=await callAI([...porUrl,{type:"text",text:prompt+AVISO_ESCALADA.replace('%%','se está reprocesando a mano')}],'claude-opus-5');
   }catch(e1){
     // Si la API no puede alcanzar las URL, se vuelve al método antiguo.
     console.warn('Reproceso por URL falló, reintento con base64:',e1.message);
